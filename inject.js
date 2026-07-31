@@ -130,6 +130,44 @@ module.exports = `(async () => {
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
   ]);
 
+  const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+
+  // Limit zapytan to prosba o zwolnienie, a nie odmowa. Rozroznienie jest
+  // kluczowe: potraktowanie go jak bledu i ponowienie innym zadaniem tylko
+  // poglebia limit.
+  const isRateLimit = (e) => {
+    if (!e) return false;
+    if (e.status === 429) return true;
+    return /rate limit|tempo zosta|too many requests/i.test(String(errMsg(e)));
+  };
+
+  const retryAfterMs = (e) => {
+    const ra = e && e.body && (e.body.retry_after != null ? e.body.retry_after : e.body.retryAfter);
+    return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
+  };
+
+  // Kazde wywolanie API przechodzi tedy: limit czasu + cierpliwe czekanie
+  // na wygasniecie limitu zapytan.
+  const apiCall = async (method, url, body, label) => {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
+        return await withTimeout(p, 30000, label);
+      } catch(e) {
+        lastErr = e;
+        if (isRateLimit(e) && attempt < 4) {
+          const wait = retryAfterMs(e);
+          log('limit zapytan (' + label + ') - czekam ' + Math.round(wait/1000) + 's');
+          await sleep(wait);
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
+  };
+
   // Wartosc 'location', ktora zadziala raz, dziala dla kolejnych questow.
   // Bez zapamietania probujemy 7 wariantow na kazdy quest, co szybko konczy
   // sie limitem zapytan i dlugim czekaniem w module api Discorda.
@@ -140,25 +178,34 @@ module.exports = `(async () => {
     const locations = knownLoc != null
       ? [knownLoc].concat(base.filter(l => l !== knownLoc))
       : base;
+
     let lastErr = null;
     for (const loc of locations) {
       try {
-        await withTimeout(api.post({ url: '/quests/' + quest.id + '/enroll', body: { location: loc } }), 20000, 'enroll');
+        await apiCall('POST', '/quests/' + quest.id + '/enroll', { location: loc }, 'enroll');
         knownLoc = loc;
         return { ok: true, loc: loc };
       } catch(e) {
-        const msg = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+        const msg = errMsg(e);
         lastErr = msg;
+
+        // Limit zapytan mimo ponowien - kolejne wartosci location nic nie dadza,
+        // bo problem nie lezy w wartosci. Przerwij i pozwol ponowic pozniej.
+        if (isRateLimit(e)) {
+          return { ok: false, err: msg, rateLimited: true };
+        }
+        if (/captcha|verif/i.test(String(msg))) {
+          return { ok: false, err: msg, captcha: true };
+        }
         log('  enroll location=' + loc + ' -> ' + msg);
-        // Jesli Discord zada weryfikacji, dalsze proby nic nie dadza
-        if (/captcha|verif/i.test(String(msg))) return { ok: false, err: msg, captcha: true };
       }
     }
+
     try {
-      await api.post({ url: '/quests/' + quest.id + '/enroll', body: {} });
+      await apiCall('POST', '/quests/' + quest.id + '/enroll', {}, 'enroll');
       return { ok: true, loc: 'empty' };
     } catch(e) {
-      return { ok: false, err: lastErr || (e && e.message) || 'unknown' };
+      return { ok: false, err: lastErr || errMsg(e) };
     }
   };
 
@@ -181,6 +228,11 @@ module.exports = `(async () => {
       log('Zapisywanie do questa...');
       const e = await enroll(quest);
       if (!e.ok) {
+        if (e.rateLimited) {
+          // Do ponowienia pozniej - nie oznaczaj jako trwale nieudany
+          R({ t: 'qretry', id: quest.id, err: e.err });
+          return { retry: true };
+        }
         R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: !!e.captcha });
         return;
       }
@@ -199,12 +251,10 @@ module.exports = `(async () => {
         const t0 = Date.now();
         let res;
         try {
-          res = await withTimeout(api.post({
-            url: '/quests/' + quest.id + '/video-progress',
-            body: { timestamp: Math.min(secondsNeeded, timestamp + Math.random()) }
-          }), 30000, 'video-progress');
+          res = await apiCall('POST', '/quests/' + quest.id + '/video-progress',
+            { timestamp: Math.min(secondsNeeded, timestamp + Math.random()) }, 'video-progress');
         } catch(e) {
-          const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
+          const msg = errMsg(e);
           log('video-progress nie powiodlo sie po ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
           R({ t: 'qerr', id: quest.id, err: 'video-progress: ' + msg });
           return;
@@ -217,10 +267,8 @@ module.exports = `(async () => {
       }
       if (!completed) {
         try {
-          await withTimeout(api.post({
-            url: '/quests/' + quest.id + '/video-progress',
-            body: { timestamp: secondsNeeded }
-          }), 30000, 'video-progress final');
+          await apiCall('POST', '/quests/' + quest.id + '/video-progress',
+            { timestamp: secondsNeeded }, 'video-progress final');
         } catch(_) {}
       }
       R({ t: 'qdone', id: quest.id, orbs: orbs });
@@ -249,12 +297,10 @@ module.exports = `(async () => {
       while (true) {
         let res;
         try {
-          res = await withTimeout(api.post({
-            url: '/quests/' + quest.id + '/heartbeat',
-            body: { stream_key: streamKey, terminal: false }
-          }), 30000, 'heartbeat');
+          res = await apiCall('POST', '/quests/' + quest.id + '/heartbeat',
+            { stream_key: streamKey, terminal: false }, 'heartbeat');
         } catch(e) {
-          errA = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+          errA = errMsg(e);
           break;
         }
 
@@ -266,10 +312,8 @@ module.exports = `(async () => {
 
         if (secondsDone >= secondsNeeded) {
           try {
-            await api.post({
-              url: '/quests/' + quest.id + '/heartbeat',
-              body: { stream_key: streamKey, terminal: true }
-            });
+            await apiCall('POST', '/quests/' + quest.id + '/heartbeat',
+              { stream_key: streamKey, terminal: true }, 'heartbeat final');
           } catch(_) {}
           okA = true;
           break;
@@ -290,7 +334,7 @@ module.exports = `(async () => {
         R({ t: 'qerr', id: quest.id, err: 'brak RunningGameStore/FluxDispatcher' }); return;
       }
       const pid = Math.floor(Math.random() * 30000) + 1000;
-      const res = await api.get({ url: '/applications/public?application_ids=' + applicationId });
+      const res = await apiCall('GET', '/applications/public?application_ids=' + applicationId, null, 'applications');
       const appData = res.body[0];
       const exe = appData.executables && appData.executables.find(x => x.os === 'win32');
       const exeName = (exe && exe.name && exe.name.replace('>','')) || appData.name.replace(/[\\/\\\\:*?"<>|]/g, '');
@@ -327,12 +371,10 @@ module.exports = `(async () => {
       while (true) {
         let res2;
         try {
-          res2 = await withTimeout(api.post({
-            url: '/quests/' + quest.id + '/heartbeat',
-            body: { stream_key: null, terminal: false }
-          }), 30000, 'heartbeat');
+          res2 = await apiCall('POST', '/quests/' + quest.id + '/heartbeat',
+            { stream_key: null, terminal: false }, 'heartbeat');
         } catch(e) {
-          failErr = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+          failErr = errMsg(e);
           break;
         }
 
@@ -346,10 +388,8 @@ module.exports = `(async () => {
 
         if (secondsDone >= secondsNeeded) {
           try {
-            await api.post({
-              url: '/quests/' + quest.id + '/heartbeat',
-              body: { stream_key: null, terminal: true }
-            });
+            await apiCall('POST', '/quests/' + quest.id + '/heartbeat',
+              { stream_key: null, terminal: true }, 'heartbeat final');
           } catch(_) {}
           ok = true;
           break;
@@ -377,11 +417,38 @@ module.exports = `(async () => {
     }
   };
 
-  for (const quest of pending) {
-    try { await doQuest(quest); }
-    catch(e) {
-      R({ t: 'qerr', id: quest.id,
-          err: (e && e.body && e.body.message) || (e && e.message) || String(e) });
+  // Odstep miedzy questami trzyma nas ponizej progu limitu zapytan.
+  const queue = pending.slice();
+  const retries = {};
+  let first = true;
+
+  while (queue.length) {
+    const quest = queue.shift();
+    if (!first) await sleep(3000);
+    first = false;
+
+    let outcome = null;
+    try {
+      outcome = await doQuest(quest);
+    } catch(e) {
+      const msg = errMsg(e);
+      if (isRateLimit(e)) {
+        outcome = { retry: true };
+      } else {
+        R({ t: 'qerr', id: quest.id, err: msg });
+      }
+    }
+
+    if (outcome && outcome.retry) {
+      retries[quest.id] = (retries[quest.id] || 0) + 1;
+      if (retries[quest.id] <= 2) {
+        log('Limit zapytan - ' + ((quest.config.messages && quest.config.messages.questName) || quest.id)
+            + ' wroci do kolejki (proba ' + retries[quest.id] + '/2)');
+        await sleep(30000);
+        queue.push(quest);
+      } else {
+        R({ t: 'qerr', id: quest.id, err: 'limit zapytan Discorda - sprobuj ponownie za kilka minut' });
+      }
     }
   }
 

@@ -392,6 +392,13 @@ class Engine extends EventEmitter {
         break;
       }
 
+      case 'qretry': {
+        const q = acc.quests.find(x => x.id === ev.id);
+        if (q) { q.state = 'waiting'; q.error = ev.err; }
+        this._log(acc, 'Limit zapytań – ponowię za chwilę');
+        break;
+      }
+
       case 'qerr': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) { q.state = 'error'; q.error = ev.err; }

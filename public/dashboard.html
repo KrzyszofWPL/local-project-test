@@ -112,6 +112,8 @@
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 
   .qerr { color: var(--err); cursor: help; }
+  .qwait { color: var(--warn); }
+  .dot.waiting { background: var(--warn); animation: pulse 1.4s infinite; }
   .qtask {
     font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #21262d;
     color: var(--muted); white-space: nowrap;
@@ -232,7 +234,8 @@ function render(state) {
       const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
       const left = Math.max(0, (q.target || 0) - (q.done || 0));
       let right;
-      if (q.state === 'error')      right = '<span class="qerr" title="' + esc(q.error || '') + '">błąd</span>';
+      if (q.state === 'waiting')    right = '<span class="qwait">czeka na limit…</span>';
+      else if (q.state === 'error') right = '<span class="qerr" title="' + esc(q.error || '') + '">błąd</span>';
       else if (q.state === 'done')  right = '100% · gotowe';
       else if (q.state === 'running') right = pct + '% · zostało ' + fmtTime(left);
       else                          right = fmtTime(q.target);

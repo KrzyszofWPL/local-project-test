@@ -116,10 +116,10 @@ function restoreTokens() {
 
   await test('każde wywołanie API ma limit czasu', async () => {
     const s = require('./inject.js');
-    const posts = (s.match(/api\.post\(/g) || []).length;
-    const guarded = (s.match(/withTimeout\(/g) || []).length;
-    assert.ok(guarded >= 4,
-      `zbyt mało wywołań objętych limitem czasu (${guarded} z ${posts} api.post)`);
+    const m = s.match(/const apiCall = async[\s\S]*?\n  \};/);
+    assert.ok(m, 'nie znaleziono warstwy apiCall');
+    assert.ok(m[0].includes('withTimeout('),
+      'apiCall musi opakowywać wywołanie limitem czasu');
   });
 
   await test('questy wideo mają pierwszeństwo przed grami', async () => {
@@ -131,6 +131,27 @@ function restoreTokens() {
     const video = body.match(/WATCH_VIDEO:\s*(\d)/)[1];
     const play = body.match(/PLAY_ON_DESKTOP:\s*(\d)/)[1];
     assert.ok(+video < +play, 'wideo musi mieć wyższy priorytet niż gra');
+  });
+
+  await test('limit zapytań jest odróżniany od odmowy', async () => {
+    const s = require('./inject.js');
+    assert.ok(s.includes('isRateLimit'), 'brak wykrywania limitu zapytań');
+    assert.ok(s.includes('retryAfterMs'), 'brak odczytu retry_after z odpowiedzi');
+    assert.ok(s.includes('rateLimited'),
+      'limit zapytań musi być odróżniony od trwałego błędu zapisu');
+  });
+
+  await test('wszystkie wywołania API idą przez wspólną warstwę', async () => {
+    const s = require('./inject.js');
+    const m = s.match(/const apiCall = async[\s\S]*?\n  \};/);
+    assert.ok(m, 'nie znaleziono warstwy apiCall');
+
+    // Poza ciałem apiCall nie powinno być żadnych bezpośrednich wywołań –
+    // inaczej omijają obsługę limitu zapytań i limit czasu.
+    const outside = s.replace(m[0], '');
+    const direct = (outside.match(/api\.(post|get)\(/g) || []).length;
+    assert.strictEqual(direct, 0,
+      `bezpośrednie wywołania api poza warstwą apiCall: ${direct}`);
   });
 
   // ── Panel ────────────────────────────────────────────────────────────────
