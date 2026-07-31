@@ -22,7 +22,8 @@ function createFetcher(token) {
 		'Content-Type': 'application/json',
 		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9165 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36',
 		'X-Super-Properties': superProperties,
-		'X-Discord-Locale': 'pl-PL'
+		'X-Discord-Locale': 'pl-PL',
+		'X-Discord-Timezone': 'Europe/Warsaw'
 	};
 
 	return async (endpoint, options = {}) => {
@@ -45,10 +46,26 @@ function createFetcher(token) {
 	};
 }
 
-function spoofGamePresence(token, appId, gameName) {
+// Nawiązuje sesję Gateway (Identify → READY) i zwraca obiekt sesji.
+// Nie otwiera nowego połączenia per quest – zamiast tego używa op:3 do zmiany presence.
+function createGatewaySession(token) {
 	return new Promise((resolve, reject) => {
 		const ws = new WebSocket('wss://gateway.discord.gg/?v=9&encoding=json');
 		let heartbeatInterval = null;
+		let resolved = false;
+
+		const cleanup = () => {
+			clearInterval(heartbeatInterval);
+			ws.close();
+		};
+
+		const timeoutId = setTimeout(() => {
+			if (!resolved) {
+				resolved = true;
+				cleanup();
+				reject(new Error('Gateway READY timeout (30s)'));
+			}
+		}, 30000);
 
 		ws.onopen = () => {};
 
@@ -56,6 +73,7 @@ function spoofGamePresence(token, appId, gameName) {
 			const data = JSON.parse(event.data);
 			const { op, d } = data;
 
+			// op:10 Hello – uruchom heartbeat i wyślij Identify
 			if (op === 10) {
 				heartbeatInterval = setInterval(() => {
 					ws.send(JSON.stringify({ op: 1, d: null }));
@@ -70,29 +88,51 @@ function spoofGamePresence(token, appId, gameName) {
 						presence: {
 							status: "online",
 							since: 0,
-							activities: [{
-								name: gameName,
-								type: 0,
-								application_id: appId,
-								timestamps: { start: Date.now() }
-							}],
+							activities: [],
 							afk: false
 						}
 					}
 				}));
 			}
 
-			if (op === 0 && data.t === 'READY') {
+			// op:0 READY – sesja aktywna, można teraz wywołać REST
+			if (op === 0 && data.t === 'READY' && !resolved) {
+				resolved = true;
+				clearTimeout(timeoutId);
 				resolve({
+					// Zmień presence na istniejącym połączeniu (op:3) zamiast otwierać nowe WS
+					setPresence: (appId, gameName) => {
+						ws.send(JSON.stringify({
+							op: 3,
+							d: {
+								status: "online",
+								since: 0,
+								activities: [{
+									name: gameName,
+									type: 0,
+									application_id: appId,
+									timestamps: { start: Date.now() }
+								}],
+								afk: false
+							}
+						}));
+					},
 					stop: () => {
-						clearInterval(heartbeatInterval);
-						ws.close();
+						clearTimeout(timeoutId);
+						cleanup();
 					}
 				});
 			}
 		};
 
-		ws.onerror = (err) => reject(err);
+		ws.onerror = (err) => {
+			if (!resolved) {
+				resolved = true;
+				clearTimeout(timeoutId);
+				cleanup();
+				reject(err);
+			}
+		};
 	});
 }
 
@@ -101,7 +141,19 @@ async function processAccount(token, index, total) {
 	console.log(`========================================`);
 	console.log(`[Konto ${index}/${total}] Token: ${token.substring(0, 12)}...`);
 
+	let gatewaySession = null;
+
 	try {
+		// Krok 1: NAJPIERW nawiąż sesję Gateway (Identify → READY),
+		// żeby endpoint /quests/@me zwrócił dane zamiast pustej tablicy.
+		try {
+			gatewaySession = await createGatewaySession(token);
+			console.log(`  [WS] Połączono z Gateway – sesja aktywna.`);
+		} catch (e) {
+			console.log(`  [!] Błąd połączenia Gateway WS: ${e.message}`);
+		}
+
+		// Krok 2: Pobierz questy PO ustanowieniu sesji Gateway
 		let quests = [];
 		try {
 			const data = await fetcher('/quests/@me');
@@ -111,8 +163,8 @@ async function processAccount(token, index, total) {
 			console.error(`  [!] Błąd pobierania questów: ${err.message}`);
 		}
 
-		const pendingQuests = quests.filter((x) => 
-			!x.userStatus?.completedAt && 
+		const pendingQuests = quests.filter((x) =>
+			!x.userStatus?.completedAt &&
 			new Date(x.config?.expiresAt).getTime() > Date.now()
 		);
 
@@ -145,17 +197,14 @@ async function processAccount(token, index, total) {
 				}
 			}
 
-			console.log(`  [+] Uruchamianie spoofa dla: ${questName} (Wymagane: ${targetSeconds}s)`);
-
-			let presenceSession = null;
-			if (appId) {
-				try {
-					presenceSession = await spoofGamePresence(token, appId, gameName);
-					console.log(`      [WS] Połączono z Gateway – sfałszowano status gry: ${gameName}`);
-				} catch (e) {
-					console.log(`      [!] Błąd połączenia Gateway WS: ${e.message}`);
-				}
+			// Krok 3: Ustaw presence przez istniejące połączenie WS (op:3),
+			// bez otwierania nowego gniazda per quest
+			if (appId && gatewaySession) {
+				gatewaySession.setPresence(appId, gameName);
+				console.log(`      [WS] Sfałszowano status gry: ${gameName}`);
 			}
+
+			console.log(`  [+] Uruchamianie spoofa dla: ${questName} (Wymagane: ${targetSeconds}s)`);
 
 			while (doneSeconds < targetSeconds) {
 				await delay(20 * 1000);
@@ -164,7 +213,7 @@ async function processAccount(token, index, total) {
 						method: 'POST',
 						body: JSON.stringify({ stream_key: "call:0:1", terminal: false })
 					});
-					
+
 					doneSeconds = res?.userStatus?.progress?.[taskName]?.value ?? (doneSeconds + 20);
 					console.log(`      Postęp: ${Math.min(doneSeconds, targetSeconds)}/${targetSeconds}s`);
 
@@ -181,7 +230,6 @@ async function processAccount(token, index, total) {
 				}
 			}
 
-			if (presenceSession) presenceSession.stop();
 			console.log(`  [✓] Sukces! Ukończono quest: ${questName}`);
 		}
 
@@ -191,6 +239,8 @@ async function processAccount(token, index, total) {
 		} else {
 			console.error(`  [ERR] Błąd konta: ${err.message}`);
 		}
+	} finally {
+		if (gatewaySession) gatewaySession.stop();
 	}
 }
 
