@@ -89,6 +89,15 @@ module.exports = `(async () => {
         && SUPPORTED.some(t => t in tc.tasks);
   });
 
+  // Kolejnosc: wideo (sekundy) -> aktywnosc -> gra. Szybkie i pewne najpierw,
+  // zeby jeden zablokowany quest-gra nie wstrzymywal calej reszty.
+  const PRIORITY = { WATCH_VIDEO: 0, WATCH_VIDEO_ON_MOBILE: 0, PLAY_ACTIVITY: 1, PLAY_ON_DESKTOP: 2, STREAM_ON_DESKTOP: 3 };
+  const taskOf = q => {
+    const tc = q.config.taskConfig || q.config.taskConfigV2;
+    return SUPPORTED.find(t => tc.tasks[t] != null);
+  };
+  pending.sort((a, b) => (PRIORITY[taskOf(a)] ?? 9) - (PRIORITY[taskOf(b)] ?? 9));
+
   R({ t: 'quests', total: all.length, pending: pending.length,
       list: pending.map(q => {
         const tc = q.config.taskConfig || q.config.taskConfigV2;
@@ -105,6 +114,8 @@ module.exports = `(async () => {
       }) });
 
   // ── 4. Zapis do questa ────────────────────────────────────────────────────
+  log('Znaleziono ' + pending.length + ' questow do zrobienia (z ' + all.length + ' widocznych)');
+
   const enroll = async (quest) => {
     const locations = [11, 10, 8, 4, 2, 1, 0];
     let lastErr = null;
@@ -140,6 +151,7 @@ module.exports = `(async () => {
     const orbs = orbsOf(quest);
 
     R({ t: 'qstart', id: quest.id, name: name, task: taskName, target: secondsNeeded, done: secondsDone, orbs: orbs });
+    log('Start: ' + name + ' [' + taskName + '] ' + secondsDone + '/' + secondsNeeded + 's');
 
     if (!(quest.userStatus && quest.userStatus.enrolledAt)) {
       const e = await enroll(quest);
@@ -147,6 +159,7 @@ module.exports = `(async () => {
         R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: !!e.captcha });
         return;
       }
+      log('Zapisano: ' + name);
       await sleep(500);
     }
 
@@ -189,24 +202,45 @@ module.exports = `(async () => {
       if (!channelId) { R({ t: 'qerr', id: quest.id, err: 'brak kanalu glosowego' }); return; }
 
       const streamKey = 'call:' + channelId + ':1';
+      let stalledA = 0;
+      let okA = false;
+      let errA = null;
+
       while (true) {
-        const res = await api.post({
-          url: '/quests/' + quest.id + '/heartbeat',
-          body: { stream_key: streamKey, terminal: false }
-        });
-        const progress = (res.body && res.body.progress && res.body.progress.PLAY_ACTIVITY && res.body.progress.PLAY_ACTIVITY.value) || 0;
-        secondsDone = progress;
-        R({ t: 'qprog', id: quest.id, done: secondsDone, target: secondsNeeded });
-        if (progress >= secondsNeeded) {
-          await api.post({
+        let res;
+        try {
+          res = await api.post({
             url: '/quests/' + quest.id + '/heartbeat',
-            body: { stream_key: streamKey, terminal: true }
+            body: { stream_key: streamKey, terminal: false }
           });
+        } catch(e) {
+          errA = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
           break;
         }
+
+        const progress = (res.body && res.body.progress && res.body.progress.PLAY_ACTIVITY && res.body.progress.PLAY_ACTIVITY.value) || 0;
+        if (progress > secondsDone) { secondsDone = progress; stalledA = 0; }
+        else { stalledA += 20; }
+
+        R({ t: 'qprog', id: quest.id, done: secondsDone, target: secondsNeeded });
+
+        if (secondsDone >= secondsNeeded) {
+          try {
+            await api.post({
+              url: '/quests/' + quest.id + '/heartbeat',
+              body: { stream_key: streamKey, terminal: true }
+            });
+          } catch(_) {}
+          okA = true;
+          break;
+        }
+
+        if (stalledA >= 120) { errA = 'backend nie nalicza postepu (0s przez 2 min)'; break; }
         await sleep(20000);
       }
-      R({ t: 'qdone', id: quest.id, orbs: orbs });
+
+      if (okA) R({ t: 'qdone', id: quest.id, orbs: orbs });
+      else R({ t: 'qerr', id: quest.id, err: errA || 'nieznany blad' });
       return;
     }
 
@@ -242,38 +276,57 @@ module.exports = `(async () => {
         try { FluxDispatcher.dispatch({ type: 'RUNNING_GAMES_CHANGE', removed: [fakeGame], added: [], games: [] }); } catch(_) {}
       };
 
-      const ok = await new Promise(resolve => {
-        let lastProgress = secondsDone;
-        let stalledFor = 0;
-        const fn = data => {
+      // Klient webowy nie prowadzi wlasnej petli heartbeatow dla gier,
+      // wiec wysylamy je sami - tak jak robi to klient desktopowy.
+      log('Udaje gre: ' + appData.name);
+
+      let stalled = 0;
+      let ok = false;
+      let failErr = null;
+
+      while (true) {
+        let res2;
+        try {
+          res2 = await api.post({
+            url: '/quests/' + quest.id + '/heartbeat',
+            body: { stream_key: null, terminal: false }
+          });
+        } catch(e) {
+          failErr = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+          break;
+        }
+
+        const prog = res2.body && res2.body.progress && res2.body.progress.PLAY_ON_DESKTOP;
+        const p = (prog && prog.value) || 0;
+
+        if (p > secondsDone) { secondsDone = p; stalled = 0; }
+        else { stalled += 20; }
+
+        R({ t: 'qprog', id: quest.id, done: secondsDone, target: secondsNeeded });
+
+        if (secondsDone >= secondsNeeded) {
           try {
-            const p = quest.config.configVersion === 1
-              ? data.userStatus.streamProgressSeconds
-              : Math.floor(data.userStatus.progress.PLAY_ON_DESKTOP.value);
-            if (p !== lastProgress) { lastProgress = p; stalledFor = 0; }
-            secondsDone = p;
-            R({ t: 'qprog', id: quest.id, done: p, target: secondsNeeded });
-            if (p >= secondsNeeded) {
-              FluxDispatcher.unsubscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', fn);
-              clearInterval(watchdog);
-              resolve(true);
-            }
+            await api.post({
+              url: '/quests/' + quest.id + '/heartbeat',
+              body: { stream_key: null, terminal: true }
+            });
           } catch(_) {}
-        };
-        FluxDispatcher.subscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', fn);
-        const watchdog = setInterval(() => {
-          stalledFor += 30;
-          if (stalledFor >= 180) {
-            FluxDispatcher.unsubscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', fn);
-            clearInterval(watchdog);
-            resolve(false);
-          }
-        }, 30000);
-      });
+          ok = true;
+          break;
+        }
+
+        // Backend nie nalicza postepu - dalsze czekanie nic nie da
+        if (stalled >= 120) {
+          failErr = 'backend nie nalicza postepu dla klienta webowego (0s przez 2 min)';
+          break;
+        }
+
+        await sleep(20000);
+      }
 
       restore();
       if (ok) R({ t: 'qdone', id: quest.id, orbs: orbs });
-      else R({ t: 'qerr', id: quest.id, err: 'brak postepu przez 3 min (klient webowy moze nie wysylac heartbeatow dla PLAY_ON_DESKTOP)' });
+      else R({ t: 'qerr', id: quest.id, err: failErr || 'nieznany blad' });
       return;
     }
 
