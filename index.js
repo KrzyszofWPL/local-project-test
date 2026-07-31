@@ -4,32 +4,67 @@ const path = require('path');
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const delay = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-const superProperties = Buffer.from(JSON.stringify({
-	os: "Windows",
-	browser: "Discord Client",
-	release_channel: "stable",
-	client_version: "1.0.9165",
-	os_version: "10.0.26100",
-	system_locale: "pl",
-	browser_user_agent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9165 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36",
-	client_build_number: 332858,
-	native_build_number: 55903
-})).toString('base64');
+const BASE_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9165 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36';
+const FALLBACK_BUILD_NUMBER = 332858;
+
+let currentBuildNumber = FALLBACK_BUILD_NUMBER;
+let superProperties = makeSuperProperties(FALLBACK_BUILD_NUMBER);
+
+function makeSuperProperties(buildNumber) {
+	return Buffer.from(JSON.stringify({
+		os: "Windows",
+		browser: "Discord Client",
+		release_channel: "stable",
+		client_version: "1.0.9165",
+		os_version: "10.0.26100",
+		system_locale: "pl",
+		browser_user_agent: BASE_USER_AGENT,
+		client_build_number: buildNumber,
+		native_build_number: 55903
+	})).toString('base64');
+}
+
+// Pobiera aktualny numer build Discorda ze stron klienta webowego.
+// Discord nie zwraca questów klientom z nieaktualnym build number.
+async function fetchDiscordBuildNumber() {
+	try {
+		const res = await fetch('https://discord.com/login', {
+			headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36' }
+		});
+		const html = await res.text();
+
+		// Wyodrębnij nazwy plików JS z atrybutów src
+		const scripts = [...html.matchAll(/src="\/assets\/([a-f0-9]+\.js)"/g)].map(m => m[1]);
+
+		// Build number jest zwykle w jednym z ostatnich chunków
+		const toCheck = scripts.slice(-5).reverse();
+		for (const file of toCheck) {
+			const jsRes = await fetch(`https://discord.com/assets/${file}`, {
+				headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36' }
+			});
+			const js = await jsRes.text();
+			const match = js.match(/Build Number:\s*(\d+)/);
+			if (match) return parseInt(match[1]);
+		}
+	} catch (_) { /* ciche niepowodzenie */ }
+	return null;
+}
 
 function createFetcher(token) {
-	const headers = {
-		'Authorization': token.trim(),
-		'Content-Type': 'application/json',
-		'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Discord/1.0.9165 Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36',
-		'X-Super-Properties': superProperties,
-		'X-Discord-Locale': 'pl-PL',
-		'X-Discord-Timezone': 'Europe/Warsaw'
-	};
-
 	return async (endpoint, options = {}) => {
+		const headers = {
+			'Authorization': token.trim(),
+			'Content-Type': 'application/json',
+			'User-Agent': BASE_USER_AGENT,
+			'X-Super-Properties': superProperties,
+			'X-Discord-Locale': 'pl-PL',
+			'X-Discord-Timezone': 'Europe/Warsaw',
+			...options.headers
+		};
+
 		const res = await fetch(`https://discord.com/api/v9${endpoint}`, {
 			...options,
-			headers: { ...headers, ...options.headers }
+			headers
 		});
 		const contentType = res.headers.get('content-type');
 		let data = null;
@@ -144,8 +179,7 @@ async function processAccount(token, index, total) {
 	let gatewaySession = null;
 
 	try {
-		// Krok 1: NAJPIERW nawiąż sesję Gateway (Identify → READY),
-		// żeby endpoint /quests/@me zwrócił dane zamiast pustej tablicy.
+		// Krok 1: Nawiąż sesję Gateway przed wywołaniem REST
 		try {
 			gatewaySession = await createGatewaySession(token);
 			console.log(`  [WS] Połączono z Gateway – sesja aktywna.`);
@@ -157,11 +191,31 @@ async function processAccount(token, index, total) {
 		let quests = [];
 		try {
 			const data = await fetcher('/quests/@me');
-			quests = Array.isArray(data) ? data : (data?.quests ?? []);
+
+			if (Array.isArray(data)) {
+				quests = data;
+			} else if (data && typeof data === 'object') {
+				// API może zwracać questy pod różnymi kluczami
+				const enrolled = Array.isArray(data.quests) ? data.quests : [];
+				const eligible = Array.isArray(data.eligible_quests) ? data.eligible_quests : [];
+				// Deduplikacja po id
+				const seen = new Set();
+				for (const q of [...enrolled, ...eligible]) {
+					if (q?.id && !seen.has(q.id)) {
+						seen.add(q.id);
+						quests.push(q);
+					}
+				}
+				if (enrolled.length === 0 && eligible.length === 0) {
+					console.log(`  [Debug] Odpowiedź API: ${JSON.stringify(data).substring(0, 200)}`);
+				}
+			}
 		} catch (err) {
 			if (err.status === 401) throw err;
 			console.error(`  [!] Błąd pobierania questów: ${err.message}`);
 		}
+
+		console.log(`  [Info] Znaleziono questów łącznie: ${quests.length}`);
 
 		const pendingQuests = quests.filter((x) =>
 			!x.userStatus?.completedAt &&
@@ -197,8 +251,6 @@ async function processAccount(token, index, total) {
 				}
 			}
 
-			// Krok 3: Ustaw presence przez istniejące połączenie WS (op:3),
-			// bez otwierania nowego gniazda per quest
 			if (appId && gatewaySession) {
 				gatewaySession.setPresence(appId, gameName);
 				console.log(`      [WS] Sfałszowano status gry: ${gameName}`);
@@ -248,6 +300,19 @@ async function main() {
 	if (!fs.existsSync(TOKENS_FILE)) {
 		console.log("[!] Brak pliku tokens.txt");
 		return;
+	}
+
+	// Pobierz aktualny numer build przed uruchomieniem
+	process.stdout.write('[Init] Pobieranie aktualnego build number Discord... ');
+	const buildNumber = await fetchDiscordBuildNumber();
+	if (buildNumber && buildNumber !== FALLBACK_BUILD_NUMBER) {
+		currentBuildNumber = buildNumber;
+		superProperties = makeSuperProperties(buildNumber);
+		console.log(`OK (${buildNumber})`);
+	} else if (buildNumber) {
+		console.log(`OK (${buildNumber}, bez zmian)`);
+	} else {
+		console.log(`nieudane, używam fallback: ${FALLBACK_BUILD_NUMBER}`);
 	}
 
 	const tokens = fs.readFileSync(TOKENS_FILE, 'utf-8')
