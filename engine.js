@@ -15,7 +15,31 @@ const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36';
+// Questy PLAY_ON_DESKTOP są naliczane tylko klientom desktopowym. Backend
+// rozpoznaje typ klienta po nagłówku X-Super-Properties, więc podajemy się
+// za Discord Client (Electron) – spójnie w UA i w super properties.
+const CLIENT_VERSION = '1.0.9165';
+const BUILD_NUMBER = 332858;
+
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+  + '(KHTML, like Gecko) discord/' + CLIENT_VERSION
+  + ' Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36';
+
+const SUPER_PROPERTIES = Buffer.from(JSON.stringify({
+  os: 'Windows',
+  browser: 'Discord Client',
+  release_channel: 'stable',
+  client_version: CLIENT_VERSION,
+  os_version: '10.0.26100',
+  os_arch: 'x64',
+  app_arch: 'x64',
+  system_locale: 'pl',
+  browser_user_agent: UA,
+  browser_version: '32.2.7',
+  client_build_number: BUILD_NUMBER,
+  native_build_number: 55903,
+  client_event_source: null,
+})).toString('base64');
 
 class Engine extends EventEmitter {
   constructor() {
@@ -212,6 +236,23 @@ class Engine extends EventEmitter {
         : undefined,
     });
     acc._context = context;
+
+    // Podmień tożsamość klienta na desktopową we wszystkich żądaniach do API.
+    // Bez tego backend traktuje sesję jako webową i nie nalicza postępu
+    // questom typu PLAY_ON_DESKTOP.
+    await context.route('**/api/v*/**', async (route) => {
+      try {
+        const headers = {
+          ...route.request().headers(),
+          'x-super-properties': SUPER_PROPERTIES,
+          'x-discord-locale': 'pl-PL',
+          'x-discord-timezone': 'Europe/Warsaw',
+        };
+        await route.continue({ headers });
+      } catch (_) {
+        try { await route.continue(); } catch (_) {}
+      }
+    });
 
     const page = await context.newPage();
     page.setDefaultTimeout(0);
