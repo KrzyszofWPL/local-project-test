@@ -1,4 +1,11 @@
 @echo off
+
+:: When double-clicked, re-open in a persistent cmd window
+if "%~1"=="RUN" goto main
+cmd /k ""%~f0" RUN"
+exit /b
+
+:main
 setlocal enabledelayedexpansion
 title Discord Quest Bot
 
@@ -10,15 +17,13 @@ echo.
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js not found. Download: https://nodejs.org/
-    pause
-    exit /b 1
+    goto end
 )
 echo Node.js: OK
 
 if not exist "%~dp0tokens.txt" (
-    echo [ERROR] tokens.txt not found
-    pause
-    exit /b 1
+    echo [ERROR] tokens.txt not found in this folder
+    goto end
 )
 
 set TOKEN_COUNT=0
@@ -32,29 +37,31 @@ if not exist node_modules\playwright (
     echo [Init] Installing playwright...
     npm cache clean --force 2>nul
     npm install
-    if errorlevel 1 npm install --legacy-peer-deps
     if errorlevel 1 (
-        echo [ERROR] npm install failed
-        pause
-        exit /b 1
+        npm install --legacy-peer-deps
+        if errorlevel 1 (
+            echo [ERROR] npm install failed
+            goto end
+        )
     )
 )
 echo npm: OK
 
-if not exist "%LOCALAPPDATA%\ms-playwright\chromium*" (
+npx playwright --version >nul 2>&1
+if errorlevel 1 (
     echo [Init] Downloading Chromium (~300MB)...
     npx playwright install chromium
     if errorlevel 1 (
         echo [ERROR] Chromium download failed
-        pause
-        exit /b 1
+        goto end
     )
+) else (
+    echo Chromium: OK
 )
-echo Chromium: OK
 echo.
 
 echo Select mode:
-echo   [1] Browser - all quests (recommended)
+echo   [1] Browser - finds ALL quests (recommended)
 echo   [2] API     - enrolled quests only
 echo.
 set MODE=1
@@ -80,5 +87,7 @@ node index.js
 
 :end
 echo.
-echo Done. Press any key to close.
+echo ==========================================
+echo  Done. Press any key to close.
+echo ==========================================
 pause
