@@ -105,10 +105,17 @@ async function processAccount(token, index, total) {
 		let quests = [];
 		try {
 			const data = await fetcher('/quests/@me');
+			if (process.env.DEBUG_QUESTS) {
+				console.log(`  [DEBUG] Surowa odpowiedź /quests/@me:`);
+				console.log(JSON.stringify(data, null, 2));
+			}
 			quests = Array.isArray(data) ? data : (data?.quests ?? []);
 		} catch (err) {
 			if (err.status === 401) throw err;
 			console.error(`  [!] Błąd pobierania questów: ${err.message}`);
+			if (process.env.DEBUG_QUESTS && err.data) {
+				console.log(`  [DEBUG] err.data:`, JSON.stringify(err.data, null, 2));
+			}
 		}
 
 		if (process.env.DEBUG_QUESTS) {
