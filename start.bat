@@ -7,7 +7,7 @@ echo   Discord Quest Bot - start.bat
 echo ==========================================
 echo.
 
-:: Check Node.js
+:: Check Node.js installed
 node --version >nul 2>&1
 if errorlevel 1 (
     echo [ERROR] Node.js is not installed.
@@ -16,15 +16,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
-:: Check Node.js version (need 18+)
-for /f %%v in ('node -e "process.stdout.write(String(process.versions.node.split(\".\")[0]))"') do set NODE_MAJOR=%%v
-if %NODE_MAJOR% LSS 18 (
-    echo [ERROR] Node.js too old. Found: v%NODE_MAJOR%.x  Need: v18+
+:: Check Node.js version via temp file (avoids quoting issues)
+echo var m=+process.versions.node.split('.')[0];if(m^<18){console.log('OLD:'+m);process.exit(1)}else{console.log('OK:'+m)} > "%TEMP%\ncheck.js"
+for /f %%v in ('node "%TEMP%\ncheck.js" 2^>nul') do set NODE_RESULT=%%v
+del "%TEMP%\ncheck.js" >nul 2>&1
+
+if "%NODE_RESULT:~0,3%"=="OLD" (
+    echo [ERROR] Node.js is too old. Need v18+, found v%NODE_RESULT:~4%.x
     echo         Download LTS from: https://nodejs.org/
     pause
     exit /b 1
 )
-echo Node.js v%NODE_MAJOR%.x OK
+echo Node.js v%NODE_RESULT:~3%.x - OK
 
 :: Check tokens.txt
 if not exist tokens.txt (
@@ -54,7 +57,7 @@ if not exist node_modules (
     echo [Init] Running npm install...
     npm install
     if errorlevel 1 (
-        echo [ERROR] npm install failed.
+        echo [ERROR] npm install failed. Make sure Node.js v18+ is installed.
         pause
         exit /b 1
     )
@@ -63,7 +66,7 @@ if not exist node_modules (
 
 :: Install Chromium if missing
 if not exist "%LOCALAPPDATA%\ms-playwright" (
-    echo [Init] Downloading Chromium browser (one-time, ~300 MB)...
+    echo [Init] Downloading Chromium browser (one-time ~300 MB)...
     npx playwright install chromium
     if errorlevel 1 (
         echo [ERROR] Chromium install failed.
@@ -75,8 +78,8 @@ if not exist "%LOCALAPPDATA%\ms-playwright" (
 
 :: Mode selection
 echo Select mode:
-echo   [1] Browser (recommended) - auto-detects ALL quests
-echo   [2] API only              - only quests you are enrolled in
+echo   [1] Browser (recommended) - finds ALL available quests automatically
+echo   [2] API only              - only quests you manually enrolled in
 echo.
 set /p MODE="Your choice (1/2, default=1): "
 if "%MODE%"=="" set MODE=1
@@ -85,18 +88,17 @@ if "%MODE%"=="2" goto run_api
 :: Browser mode
 :run_browser
 echo.
-echo How many accounts should run at the same time?
-echo   RAM guide:
-echo     5  accounts = ~1-2 GB RAM
-echo     10 accounts = ~2-4 GB RAM
-echo     20 accounts = ~4-8 GB RAM
-echo     50 accounts = ~10-20 GB RAM
+echo How many accounts at the same time?
+echo   5  = ~1-2 GB RAM
+echo   10 = ~2-4 GB RAM
+echo   20 = ~4-8 GB RAM
+echo   50 = ~10-20 GB RAM
 echo.
-set /p CONC="Concurrency (default=5, max=%TOKEN_COUNT%): "
+set /p CONC="Concurrency (default=5): "
 if "%CONC%"=="" set CONC=5
 
 echo.
-echo Starting browser.js  Tokens: %TOKEN_COUNT%  Concurrency: %CONC%
+echo Starting browser.js  ^|  Tokens: %TOKEN_COUNT%  ^|  Concurrency: %CONC%
 echo ------------------------------------------
 set CONCURRENCY=%CONC%
 node browser.js
@@ -105,7 +107,7 @@ goto done
 :: API mode
 :run_api
 echo.
-echo Starting index.js  Tokens: %TOKEN_COUNT%  (sequential)
+echo Starting index.js  ^|  Tokens: %TOKEN_COUNT%  ^|  sequential
 echo ------------------------------------------
 node index.js
 goto done
