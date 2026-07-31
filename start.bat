@@ -54,12 +54,18 @@ if "%TOKEN_COUNT%"=="0" (
 
 :: Install npm deps if missing
 if not exist node_modules (
+    echo [Init] Clearing npm cache...
+    npm cache clean --force >nul 2>&1
     echo [Init] Running npm install...
     npm install
     if errorlevel 1 (
-        echo [ERROR] npm install failed. Make sure Node.js v18+ is installed.
-        pause
-        exit /b 1
+        echo [Init] Retrying with --legacy-peer-deps...
+        npm install --legacy-peer-deps
+        if errorlevel 1 (
+            echo [ERROR] npm install failed.
+            pause
+            exit /b 1
+        )
     )
     echo.
 )
