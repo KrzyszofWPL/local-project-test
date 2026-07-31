@@ -187,28 +187,38 @@ async function processAccount(token, index, total) {
 			console.log(`  [!] Błąd połączenia Gateway WS: ${e.message}`);
 		}
 
-		// Krok 2: Pobierz questy PO ustanowieniu sesji Gateway
+		// Krok 2: Pobierz questy PO ustanowieniu sesji Gateway.
+		// /quests/@me zwraca tylko zapisane questy. Dostępne (niezapisane) questy
+		// odkrywamy przez endpoint placement, który zasila zakładkę Discover → Quests.
 		let quests = [];
 		try {
-			const data = await fetcher('/quests/@me');
+			const seen = new Set();
 
-			if (Array.isArray(data)) {
-				quests = data;
-			} else if (data && typeof data === 'object') {
-				// API może zwracać questy pod różnymi kluczami
-				const enrolled = Array.isArray(data.quests) ? data.quests : [];
-				const eligible = Array.isArray(data.eligible_quests) ? data.eligible_quests : [];
-				// Deduplikacja po id
-				const seen = new Set();
-				for (const q of [...enrolled, ...eligible]) {
+			const addQuests = (list) => {
+				for (const q of (Array.isArray(list) ? list : [])) {
 					if (q?.id && !seen.has(q.id)) {
 						seen.add(q.id);
 						quests.push(q);
 					}
 				}
-				if (enrolled.length === 0 && eligible.length === 0) {
-					console.log(`  [Debug] Odpowiedź API: ${JSON.stringify(data).substring(0, 200)}`);
-				}
+			};
+
+			// Questy zapisane (in-progress)
+			const meData = await fetcher('/quests/@me');
+			if (Array.isArray(meData)) {
+				addQuests(meData);
+			} else if (meData && typeof meData === 'object') {
+				addQuests(meData.quests);
+				addQuests(meData.eligible_quests);
+			}
+
+			// Questy dostępne do odkrycia (zakładka Discover → Quests)
+			for (const placement of ['QUESTS_TAB', 'QUEST_BAR', 'LIBRARY_CONTEXTUAL_QUEST']) {
+				try {
+					const placementData = await fetcher(`/quests/decision?placement=${placement}`);
+					if (placementData?.quest) addQuests([placementData.quest]);
+					addQuests(placementData?.quests);
+				} catch (_) { /* placement może nie istnieć */ }
 			}
 		} catch (err) {
 			if (err.status === 401) throw err;
