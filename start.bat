@@ -7,120 +7,100 @@ echo   Discord Quest Bot - start.bat
 echo ==========================================
 echo.
 
-:: Check Node.js installed
+:: ── Node.js check ──────────────────────────────────────────────────────────
 node --version >nul 2>&1
 if errorlevel 1 (
-    echo [ERROR] Node.js is not installed.
-    echo         Download from: https://nodejs.org/
-    pause
-    exit /b 1
+    echo [ERROR] Node.js not found. Download: https://nodejs.org/
+    goto end
+)
+echo Node.js: OK
+
+:: ── tokens.txt check ───────────────────────────────────────────────────────
+if not exist "%~dp0tokens.txt" (
+    echo [ERROR] tokens.txt not found in: %~dp0
+    goto end
 )
 
-:: Check Node.js version via temp file (avoids quoting issues)
-echo var m=+process.versions.node.split('.')[0];if(m^<18){console.log('OLD:'+m);process.exit(1)}else{console.log('OK:'+m)} > "%TEMP%\ncheck.js"
-for /f %%v in ('node "%TEMP%\ncheck.js" 2^>nul') do set NODE_RESULT=%%v
-del "%TEMP%\ncheck.js" >nul 2>&1
-
-if "%NODE_RESULT:~0,3%"=="OLD" (
-    echo [ERROR] Node.js is too old. Need v18+, found v%NODE_RESULT:~4%.x
-    echo         Download LTS from: https://nodejs.org/
-    pause
-    exit /b 1
-)
-echo Node.js v%NODE_RESULT:~3%.x - OK
-
-:: Check tokens.txt
-if not exist tokens.txt (
-    echo [ERROR] tokens.txt not found.
-    echo         Create tokens.txt with one Discord token per line.
-    pause
-    exit /b 1
-)
-
-:: Count tokens
 set TOKEN_COUNT=0
-for /f "usebackq delims=" %%i in (tokens.txt) do (
-    set /a TOKEN_COUNT+=1
-)
-
-echo Tokens found : %TOKEN_COUNT%
-echo.
-
+for /f "usebackq delims=" %%i in ("%~dp0tokens.txt") do set /a TOKEN_COUNT+=1
+echo Tokens found: %TOKEN_COUNT%
 if "%TOKEN_COUNT%"=="0" (
     echo [ERROR] tokens.txt is empty.
-    pause
-    exit /b 1
+    goto end
 )
+echo.
 
-:: Install npm deps if missing
-if not exist node_modules (
-    echo [Init] Clearing npm cache...
-    npm cache clean --force >nul 2>&1
-    echo [Init] Running npm install...
+:: ── npm install ─────────────────────────────────────────────────────────────
+if not exist "%~dp0node_modules\playwright" (
+    echo [Init] Installing dependencies (playwright)...
+    echo        This may take 1-2 minutes on first run.
+    echo.
+    npm cache clean --force 2>nul
+    cd /d "%~dp0"
     npm install
     if errorlevel 1 (
-        echo [Init] Retrying with --legacy-peer-deps...
+        echo.
+        echo [RETRY] Trying with --legacy-peer-deps...
         npm install --legacy-peer-deps
         if errorlevel 1 (
-            echo [ERROR] npm install failed.
-            pause
-            exit /b 1
+            echo [ERROR] npm install failed. Check your internet connection.
+            goto end
         )
     )
     echo.
 )
+echo node_modules: OK
 
-:: Install Chromium if missing
-if not exist "%LOCALAPPDATA%\ms-playwright" (
-    echo [Init] Downloading Chromium browser (one-time ~300 MB)...
+:: ── Playwright / Chromium ──────────────────────────────────────────────────
+if not exist "%LOCALAPPDATA%\ms-playwright\chromium*" (
+    echo [Init] Downloading Chromium (~300 MB, one-time only)...
+    cd /d "%~dp0"
     npx playwright install chromium
     if errorlevel 1 (
-        echo [ERROR] Chromium install failed.
-        pause
-        exit /b 1
+        echo [ERROR] Chromium download failed.
+        goto end
     )
     echo.
 )
-
-:: Mode selection
-echo Select mode:
-echo   [1] Browser (recommended) - finds ALL available quests automatically
-echo   [2] API only              - only quests you manually enrolled in
+echo Chromium: OK
 echo.
-set /p MODE="Your choice (1/2, default=1): "
-if "%MODE%"=="" set MODE=1
+
+:: ── Mode selection ─────────────────────────────────────────────────────────
+echo Select mode:
+echo   [1] Browser - finds ALL quests (recommended)
+echo   [2] API     - only enrolled quests
+echo.
+set MODE=1
+set /p MODE="Choice (1/2): "
+
 if "%MODE%"=="2" goto run_api
 
-:: Browser mode
+:: ── Browser mode ───────────────────────────────────────────────────────────
 :run_browser
 echo.
-echo How many accounts at the same time?
-echo   5  = ~1-2 GB RAM
-echo   10 = ~2-4 GB RAM
-echo   20 = ~4-8 GB RAM
-echo   50 = ~10-20 GB RAM
-echo.
-set /p CONC="Concurrency (default=5): "
-if "%CONC%"=="" set CONC=5
+echo Concurrency (accounts at once):
+echo   5=safe  10=medium  20=fast  50=max
+set CONC=5
+set /p CONC="How many at once (default 5): "
 
 echo.
-echo Starting browser.js  ^|  Tokens: %TOKEN_COUNT%  ^|  Concurrency: %CONC%
-echo ------------------------------------------
+echo --- Starting browser.js | tokens=%TOKEN_COUNT% | concurrency=%CONC% ---
 set CONCURRENCY=%CONC%
+cd /d "%~dp0"
 node browser.js
-goto done
+goto end
 
-:: API mode
+:: ── API mode ───────────────────────────────────────────────────────────────
 :run_api
 echo.
-echo Starting index.js  ^|  Tokens: %TOKEN_COUNT%  ^|  sequential
-echo ------------------------------------------
+echo --- Starting index.js | tokens=%TOKEN_COUNT% ---
+cd /d "%~dp0"
 node index.js
-goto done
 
-:done
+:: ── End ────────────────────────────────────────────────────────────────────
+:end
 echo.
 echo ==========================================
-echo  Done. Press any key to exit.
+echo  Finished. Press any key to close.
 echo ==========================================
-pause >nul
+pause
