@@ -38,50 +38,63 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
   for (let i = 0; i < 120 && !window.webpackChunkdiscord_app; i++) await sleep(500);
   if (!window.webpackChunkdiscord_app) return { fatal: 'webpack timeout (60s)' };
 
-  // ── 2. Uzyskaj funkcję require() webpacka ─────────────────────────────────
+  // ── 2. Uzyskaj funkcję require() webpacka (wzorzec aamiaa) ────────────────
   let wpRequire;
   try {
-    webpackChunkdiscord_app.push([[Symbol()], {}, r => { wpRequire = r; }]);
+    delete window.$;
+    wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
     webpackChunkdiscord_app.pop();
   } catch(e) { return { fatal: 'wpRequire: ' + e.message }; }
-  if (!wpRequire?.c) return { fatal: 'wpRequire.c brak' };
+  if (!wpRequire?.c) return { fatal: 'wpRequire.c brak (typ: ' + typeof wpRequire + ')' };
 
-  // ── 3. Znajdź QuestsStore – kilka strategii, Discord zmienia strukturę ────
-  const modules = Object.values(wpRequire.c ?? wpRequire.m ?? {});
+  // ── 3. Znajdź QuestsStore ─────────────────────────────────────────────────
+  const modules = Object.values(wpRequire.c);
   log('Modułów webpack: ' + modules.length);
 
-  const isQuestsStore = (v) => {
-    if (!v || typeof v !== 'object') return false;
-    // Strategia A: klasyczny Flux store z mapą quests
-    if (v.quests instanceof Map && typeof v.getQuest === 'function') return true;
-    // Strategia B: nazwa konstruktora / getName()
-    try {
-      const n = v.constructor?.displayName ?? v.constructor?.name
-             ?? (typeof v.getName === 'function' ? v.getName() : null);
-      if (n === 'QuestsStore' && (v.quests || v.getQuest)) return true;
-    } catch(_) {}
-    // Strategia C: ma quests jako Map lub obiekt + typowe metody questowe
-    if (v.getQuest && (v.quests || v.getAll || v.getAllQuests)) return true;
-    return false;
-  };
-
   let QuestsStore = null;
-  const storeNames = [];
-  for (const mod of modules) {
-    try {
+
+  // Strategia 1: dokładny wzorzec aamiaa – exports.A z getQuest na prototypie
+  try {
+    const m = modules.find(x => x?.exports?.A?.__proto__?.getQuest);
+    if (m) QuestsStore = m.exports.A;
+  } catch(_) {}
+
+  // Strategia 2: inne typowe klucze eksportu (Discord zmienia minifikację)
+  if (!QuestsStore) {
+    const keys = ['A', 'Z', 'ZP', 'default', 'Ay', 'N'];
+    outer: for (const mod of modules) {
       const exp = mod?.exports;
-      if (!exp || typeof exp !== 'object') continue;
-      const candidates = [exp, exp.default, exp.Z, exp.ZP, ...Object.values(exp)];
-      for (const v of candidates) {
-        if (isQuestsStore(v)) { QuestsStore = v; break; }
-        // Zbierz nazwy store'ów do diagnostyki
+      if (!exp) continue;
+      for (const k of keys) {
         try {
-          const n = v?.constructor?.displayName;
-          if (n && n.includes('Store') && storeNames.length < 200) storeNames.push(n);
+          const v = exp[k];
+          if (v && (v.__proto__?.getQuest || typeof v.getQuest === 'function')) {
+            QuestsStore = v; break outer;
+          }
         } catch(_) {}
       }
-    } catch(_) {}
-    if (QuestsStore) break;
+    }
+  }
+
+  // Strategia 3: pełne skanowanie wszystkich eksportów
+  const storeNames = [];
+  if (!QuestsStore) {
+    outer2: for (const mod of modules) {
+      try {
+        const exp = mod?.exports;
+        if (!exp || typeof exp !== 'object') continue;
+        for (const v of Object.values(exp)) {
+          if (!v || typeof v !== 'object') continue;
+          try {
+            if (v.__proto__?.getQuest || typeof v.getQuest === 'function') {
+              QuestsStore = v; break outer2;
+            }
+            const n = v.constructor?.displayName;
+            if (n && n.includes('Store') && storeNames.length < 300) storeNames.push(n);
+          } catch(_) {}
+        }
+      } catch(_) {}
+    }
   }
 
   if (!QuestsStore) {
