@@ -111,7 +111,12 @@ async function processAccount(token, index, total) {
 			console.error(`  [!] Błąd pobierania questów: ${err.message}`);
 		}
 
-		const pendingQuests = quests.filter((x) => 
+		if (process.env.DEBUG_QUESTS) {
+			console.log(`  [DEBUG] Pobrano ${quests.length} questów, surowa struktura pierwszego:`);
+			console.log(JSON.stringify(quests[0], null, 2));
+		}
+
+		const pendingQuests = quests.filter((x) =>
 			!x.userStatus?.completedAt && 
 			new Date(x.config?.expiresAt).getTime() > Date.now()
 		);
