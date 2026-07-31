@@ -1,0 +1,317 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Discord Quest Bot – Panel</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2230;
+    --border: #2a3240;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --accent: #5865f2;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --orb: #ffb02e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  header {
+    position: sticky; top: 0; z-index: 10;
+    background: rgba(13,17,23,.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--border); padding: 14px 20px;
+    display: flex; align-items: center; gap: 20px; flex-wrap: wrap;
+  }
+  h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: -.01em; }
+  .stats { display: flex; gap: 22px; margin-left: auto; flex-wrap: wrap; }
+  .stat { text-align: right; }
+  .stat .v { font-size: 19px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .stat .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .05em; }
+  .orbs .v { color: var(--orb); }
+
+  .toolbar {
+    display: flex; gap: 10px; align-items: center; flex-wrap: wrap;
+    padding: 14px 20px; border-bottom: 1px solid var(--border);
+  }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    padding: 7px 14px; border-radius: 7px; cursor: pointer; font: inherit;
+    font-weight: 500; transition: .12s;
+  }
+  button:hover:not(:disabled) { background: #262d3d; border-color: #3d4757; }
+  button:disabled { opacity: .4; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); }
+  button.primary:hover:not(:disabled) { background: #4752e0; }
+  button.danger { background: transparent; border-color: var(--err); color: var(--err); }
+  button.danger:hover:not(:disabled) { background: rgba(248,81,73,.12); }
+  button.sm { padding: 4px 11px; font-size: 12.5px; }
+
+  label.inline { display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 13px; }
+  input[type=number] {
+    width: 62px; background: var(--panel-2); border: 1px solid var(--border);
+    color: var(--text); padding: 6px 9px; border-radius: 6px; font: inherit;
+  }
+  .sep { flex: 1; }
+
+  main { padding: 20px; display: grid; gap: 14px;
+         grid-template-columns: repeat(auto-fill, minmax(430px, 1fr)); }
+
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 11px; overflow: hidden; }
+  .card.running { border-color: rgba(88,101,242,.55); }
+  .card.done    { border-color: rgba(63,185,80,.4); }
+  .card.error   { border-color: rgba(248,81,73,.4); }
+
+  .card-head { padding: 13px 15px; display: flex; align-items: center; gap: 11px; }
+  .avatar {
+    width: 34px; height: 34px; border-radius: 50%; flex: none;
+    background: linear-gradient(135deg, #5865f2, #8b5cf6);
+    display: grid; place-items: center; font-weight: 650; font-size: 14px;
+  }
+  .who { min-width: 0; flex: 1; }
+  .who .name { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .who .sub { font-size: 11.5px; color: var(--muted); font-family: ui-monospace, monospace; }
+
+  .badge {
+    font-size: 11px; padding: 3px 9px; border-radius: 20px; font-weight: 600;
+    text-transform: uppercase; letter-spacing: .03em; white-space: nowrap;
+  }
+  .b-idle    { background: #21262d; color: var(--muted); }
+  .b-starting,
+  .b-running { background: rgba(88,101,242,.18); color: #9aa5ff; }
+  .b-done    { background: rgba(63,185,80,.16); color: var(--ok); }
+  .b-error   { background: rgba(248,81,73,.16); color: var(--err); }
+  .b-stopped { background: #21262d; color: var(--muted); }
+
+  .msg { padding: 0 15px 11px; font-size: 12.5px; color: var(--muted); min-height: 18px; }
+
+  .bar { height: 5px; background: #21262d; }
+  .bar > i { display: block; height: 100%; background: var(--accent); transition: width .4s ease; }
+  .card.done .bar > i { background: var(--ok); }
+
+  .kpis { display: flex; gap: 18px; padding: 11px 15px; border-top: 1px solid var(--border); }
+  .kpi .v { font-weight: 650; font-variant-numeric: tabular-nums; }
+  .kpi .l { font-size: 10.5px; color: var(--muted); text-transform: uppercase; }
+  .kpi.orbs .v { color: var(--orb); }
+
+  .quests { border-top: 1px solid var(--border); max-height: 220px; overflow-y: auto; }
+  .quest { display: flex; align-items: center; gap: 9px; padding: 8px 15px; font-size: 12.5px; }
+  .quest + .quest { border-top: 1px solid rgba(42,50,64,.5); }
+  .quest .qn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .quest .qp { color: var(--muted); font-variant-numeric: tabular-nums; font-size: 11.5px; }
+  .dot { width: 7px; height: 7px; border-radius: 50%; flex: none; background: #30363d; }
+  .dot.running { background: var(--accent); animation: pulse 1.4s infinite; }
+  .dot.done { background: var(--ok); }
+  .dot.error { background: var(--err); }
+  @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
+
+  .qtask {
+    font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #21262d;
+    color: var(--muted); white-space: nowrap;
+  }
+
+  .actions { display: flex; gap: 7px; padding: 11px 15px; border-top: 1px solid var(--border); }
+
+  .captcha {
+    margin: 0 15px 11px; padding: 9px 11px; border-radius: 7px; font-size: 12.5px;
+    background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.35); color: #e3b341;
+  }
+
+  details.logs { border-top: 1px solid var(--border); }
+  details.logs summary {
+    padding: 9px 15px; cursor: pointer; font-size: 12.5px; color: var(--muted);
+    user-select: none;
+  }
+  details.logs summary:hover { color: var(--text); }
+  .logbox {
+    max-height: 170px; overflow-y: auto; padding: 0 15px 11px;
+    font-family: ui-monospace, monospace; font-size: 11.5px; color: var(--muted);
+  }
+  .logbox div { padding: 2px 0; }
+
+  .empty { grid-column: 1/-1; text-align: center; padding: 70px 20px; color: var(--muted); }
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: #30363d; border-radius: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Discord Quest Bot</h1>
+  <div class="stats">
+    <div class="stat"><div class="v" id="t-accounts">0</div><div class="l">Konta</div></div>
+    <div class="stat"><div class="v" id="t-active">0</div><div class="l">Aktywne</div></div>
+    <div class="stat"><div class="v" id="t-quests">0</div><div class="l">Questy łącznie</div></div>
+    <div class="stat orbs"><div class="v" id="t-orbs">0</div><div class="l">Orbs łącznie</div></div>
+  </div>
+</header>
+
+<div class="toolbar">
+  <button class="primary" id="btn-start-all">▶ Uruchom wszystkie</button>
+  <button class="danger" id="btn-stop-all">■ Zatrzymaj wszystkie</button>
+  <label class="inline">
+    Równolegle
+    <input type="number" id="conc" min="1" max="50" value="5">
+  </label>
+  <label class="inline">
+    <input type="checkbox" id="headed"> Pokaż okna przeglądarki
+  </label>
+  <div class="sep"></div>
+  <button id="btn-reload">↻ Wczytaj tokens.txt</button>
+</div>
+
+<main id="grid"></main>
+
+<script>
+const STATUS_PL = {
+  idle: 'Bezczynne', starting: 'Start…', running: 'Pracuje',
+  done: 'Gotowe', error: 'Błąd', stopped: 'Zatrzymane',
+};
+const TASK_PL = {
+  WATCH_VIDEO: 'wideo', WATCH_VIDEO_ON_MOBILE: 'wideo',
+  PLAY_ON_DESKTOP: 'gra', STREAM_ON_DESKTOP: 'stream', PLAY_ACTIVITY: 'aktywność',
+};
+
+const fmtTime = (s) => {
+  s = Math.max(0, Math.round(s));
+  const m = Math.floor(s / 60);
+  return m > 0 ? m + 'm ' + (s % 60) + 's' : s + 's';
+};
+
+const post = (url, body) =>
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  });
+
+let openLogs = new Set();
+let lastState = null;
+
+function render(state) {
+  lastState = state;
+
+  const active = state.accounts.filter(a => a.status === 'running' || a.status === 'starting').length;
+  document.getElementById('t-accounts').textContent = state.accounts.length;
+  document.getElementById('t-active').textContent = active;
+  document.getElementById('t-quests').textContent = state.totals.questsCompleted;
+  document.getElementById('t-orbs').textContent = state.totals.orbsEarned;
+
+  const conc = document.getElementById('conc');
+  if (document.activeElement !== conc) conc.value = state.concurrency;
+  document.getElementById('headed').checked = !state.headless;
+
+  const grid = document.getElementById('grid');
+
+  if (!state.accounts.length) {
+    grid.innerHTML =
+      '<div class="empty">Brak kont.<br>Dodaj tokeny do <code>tokens.txt</code> ' +
+      '(jeden na linię) i kliknij „Wczytaj tokens.txt”.</div>';
+    return;
+  }
+
+  grid.innerHTML = state.accounts.map(a => {
+    const busy = a.status === 'running' || a.status === 'starting';
+    const initial = (a.username || '?').charAt(0).toUpperCase();
+    const logsOpen = openLogs.has(a.id) ? ' open' : '';
+
+    const quests = a.quests.length ? a.quests.map(q => {
+      const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
+      return `
+        <div class="quest">
+          <span class="dot ${q.state}"></span>
+          <span class="qn" title="${esc(q.name)}">${esc(q.name)}</span>
+          <span class="qtask">${TASK_PL[q.task] || q.task}</span>
+          <span class="qp">${q.state === 'error' ? '—' : pct + '% · ' + fmtTime(q.done) + '/' + fmtTime(q.target)}</span>
+        </div>`;
+    }).join('') : '<div class="quest"><span class="qp">Brak wykrytych questów</span></div>';
+
+    const logs = a.logs.length
+      ? a.logs.map(l => `<div>${esc(l.msg)}</div>`).join('')
+      : '<div>Brak wpisów</div>';
+
+    return `
+      <div class="card ${a.status}">
+        <div class="card-head">
+          <div class="avatar">${esc(initial)}</div>
+          <div class="who">
+            <div class="name">${esc(a.username || 'Konto ' + (+a.id + 1))}</div>
+            <div class="sub">${esc(a.label)}</div>
+          </div>
+          <span class="badge b-${a.status}">${STATUS_PL[a.status] || a.status}</span>
+        </div>
+
+        <div class="msg">${esc(a.message || '')}</div>
+
+        ${a.needsCaptcha ? `
+          <div class="captcha">
+            Discord poprosił o weryfikację. Włącz „Pokaż okna przeglądarki”,
+            uruchom to konto i przejdź weryfikację ręcznie — sesja zostanie zapamiętana.
+          </div>` : ''}
+
+        <div class="bar"><i style="width:${a.percent}%"></i></div>
+
+        <div class="kpis">
+          <div class="kpi"><div class="v">${a.percent}%</div><div class="l">Postęp</div></div>
+          <div class="kpi"><div class="v">${a.questsDone}</div><div class="l">Ukończone</div></div>
+          <div class="kpi orbs"><div class="v">${a.orbs}</div><div class="l">Orbs</div></div>
+        </div>
+
+        <div class="quests">${quests}</div>
+
+        <div class="actions">
+          <button class="sm primary" data-act="start" data-id="${a.id}" ${busy ? 'disabled' : ''}>▶ Start</button>
+          <button class="sm danger"  data-act="stop"  data-id="${a.id}" ${busy ? '' : 'disabled'}>■ Stop</button>
+        </div>
+
+        <details class="logs" data-id="${a.id}"${logsOpen}>
+          <summary>Log (${a.logs.length})</summary>
+          <div class="logbox">${logs}</div>
+        </details>
+      </div>`;
+  }).join('');
+}
+
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+// ── Zdarzenia ───────────────────────────────────────────────────────────────
+document.addEventListener('click', e => {
+  const btn = e.target.closest('button[data-act]');
+  if (btn) {
+    post('/api/' + btn.dataset.act, { id: btn.dataset.id });
+    btn.disabled = true;
+  }
+});
+
+document.addEventListener('toggle', e => {
+  const d = e.target.closest('details.logs');
+  if (!d) return;
+  if (d.open) openLogs.add(d.dataset.id); else openLogs.delete(d.dataset.id);
+}, true);
+
+document.getElementById('btn-start-all').onclick = () => post('/api/start-all');
+document.getElementById('btn-stop-all').onclick  = () => post('/api/stop-all');
+document.getElementById('btn-reload').onclick    = () => post('/api/reload-tokens');
+document.getElementById('conc').onchange = e => post('/api/concurrency', { value: +e.target.value });
+document.getElementById('headed').onchange = e => post('/api/headless', { value: !e.target.checked });
+
+// ── Strumień stanu ──────────────────────────────────────────────────────────
+function connect() {
+  const es = new EventSource('/api/stream');
+  es.onmessage = e => render(JSON.parse(e.data));
+  es.onerror = () => { es.close(); setTimeout(connect, 1500); };
+}
+connect();
+</script>
+</body>
+</html>

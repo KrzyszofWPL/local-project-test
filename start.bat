@@ -4,31 +4,44 @@ cmd /k ""%~f0" RUN"
 exit /b
 
 :main
-title Discord Quest Bot
+title Discord Quest Bot - Panel
 cd /d "%~dp0"
 
 echo ==========================================
-echo   Discord Quest Bot
+echo   Discord Quest Bot - Panel sterowania
 echo ==========================================
 echo.
 
-set TOKEN_COUNT=0
-for /f "usebackq delims=" %%i in ("tokens.txt") do set /a TOKEN_COUNT+=1
-echo Tokens: %TOKEN_COUNT%
+node --version >nul 2>&1
+if errorlevel 1 (
+    echo [BLAD] Node.js nie znaleziony: https://nodejs.org/
+    pause
+    exit /b 1
+)
+
+if not exist tokens.txt (
+    echo [BLAD] Brak pliku tokens.txt
+    pause
+    exit /b 1
+)
+
+if not exist node_modules\playwright (
+    echo [Init] Instalowanie zaleznosci...
+    where pnpm >nul 2>&1
+    if errorlevel 1 (
+        npm install
+    ) else (
+        pnpm install
+    )
+    echo.
+)
+
+echo Otwieranie panelu: http://localhost:3000
+start "" http://localhost:3000
 echo.
 
-set /p CONC="Concurrency (press Enter for 5): "
-if "%CONC%"=="" set CONC=5
-set CONCURRENCY=%CONC%
+node server.js
 
 echo.
-echo Starting - tokens=%TOKEN_COUNT% concurrency=%CONC%
-echo ==========================================
-echo.
-
-node browser.js
-
-echo.
-echo ==========================================
-echo  Done. Press any key to close.
+echo Panel zatrzymany. Nacisnij dowolny klawisz.
 pause
