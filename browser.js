@@ -46,24 +46,61 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
   } catch(e) { return { fatal: 'wpRequire: ' + e.message }; }
   if (!wpRequire?.c) return { fatal: 'wpRequire.c brak' };
 
-  // ── 3. Znajdź QuestsStore przez duck-typing ───────────────────────────────
+  // ── 3. Znajdź QuestsStore – kilka strategii, Discord zmienia strukturę ────
+  const modules = Object.values(wpRequire.c ?? wpRequire.m ?? {});
+  log('Modułów webpack: ' + modules.length);
+
+  const isQuestsStore = (v) => {
+    if (!v || typeof v !== 'object') return false;
+    // Strategia A: klasyczny Flux store z mapą quests
+    if (v.quests instanceof Map && typeof v.getQuest === 'function') return true;
+    // Strategia B: nazwa konstruktora / getName()
+    try {
+      const n = v.constructor?.displayName ?? v.constructor?.name
+             ?? (typeof v.getName === 'function' ? v.getName() : null);
+      if (n === 'QuestsStore' && (v.quests || v.getQuest)) return true;
+    } catch(_) {}
+    // Strategia C: ma quests jako Map lub obiekt + typowe metody questowe
+    if (v.getQuest && (v.quests || v.getAll || v.getAllQuests)) return true;
+    return false;
+  };
+
   let QuestsStore = null;
-  for (const mod of Object.values(wpRequire.c)) {
+  const storeNames = [];
+  for (const mod of modules) {
     try {
       const exp = mod?.exports;
-      if (!exp) continue;
-      const candidates = [exp, exp.default, ...Object.values(exp)];
+      if (!exp || typeof exp !== 'object') continue;
+      const candidates = [exp, exp.default, exp.Z, exp.ZP, ...Object.values(exp)];
       for (const v of candidates) {
-        if (v?.getQuest && v?.quests instanceof Map) { QuestsStore = v; break; }
+        if (isQuestsStore(v)) { QuestsStore = v; break; }
+        // Zbierz nazwy store'ów do diagnostyki
+        try {
+          const n = v?.constructor?.displayName;
+          if (n && n.includes('Store') && storeNames.length < 200) storeNames.push(n);
+        } catch(_) {}
       }
     } catch(_) {}
     if (QuestsStore) break;
   }
-  if (!QuestsStore) return { fatal: 'QuestsStore nie znaleziono' };
+
+  if (!QuestsStore) {
+    const questish = [...new Set(storeNames)].filter(n => /quest/i.test(n));
+    return {
+      fatal: 'QuestsStore nie znaleziono',
+      debug: {
+        modules: modules.length,
+        storesFound: [...new Set(storeNames)].length,
+        questRelated: questish,
+        sample: [...new Set(storeNames)].slice(0, 25),
+      }
+    };
+  }
 
   // ── 4. Poczekaj aż Discord pobierze questy ze swojego backendu (maks 30s) ─
-  for (let i = 0; i < 30 && QuestsStore.quests.size === 0; i++) await sleep(1000);
-  log('QuestsStore: ' + QuestsStore.quests.size + ' questów ogółem');
+  const questCount = () => (QuestsStore.quests?.size ?? Object.keys(QuestsStore.quests ?? {}).length ?? 0);
+  for (let i = 0; i < 30 && questCount() === 0; i++) await sleep(1000);
+  log('QuestsStore: ' + questCount() + ' questów ogółem');
 
   // ── 5. Token z localStorage → do bezpośrednich wywołań fetch() ───────────
   // Discord usuwa window.localStorage – odzyskaj przez iframe
@@ -253,6 +290,14 @@ async function processToken(browser, token, index, total) {
 
     if (result.fatal) {
       log('✗ Błąd krytyczny:', result.fatal);
+      if (result.debug) {
+        log('  [Debug] modułów:', result.debug.modules,
+            '| store\'ów:', result.debug.storesFound);
+        if (result.debug.questRelated?.length)
+          log('  [Debug] quest-related:', result.debug.questRelated.join(', '));
+        if (result.debug.sample?.length)
+          log('  [Debug] przykłady:', result.debug.sample.join(', '));
+      }
       return;
     }
 
