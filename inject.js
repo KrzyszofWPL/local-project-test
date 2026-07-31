@@ -123,16 +123,26 @@ module.exports = `(async () => {
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
   ]);
 
+  // Wartosc 'location', ktora zadziala raz, dziala dla kolejnych questow.
+  // Bez zapamietania probujemy 7 wariantow na kazdy quest, co szybko konczy
+  // sie limitem zapytan i dlugim czekaniem w module api Discorda.
+  let knownLoc = null;
+
   const enroll = async (quest) => {
-    const locations = [11, 10, 8, 4, 2, 1, 0];
+    const base = [11, 10, 8, 4, 2, 1, 0];
+    const locations = knownLoc != null
+      ? [knownLoc].concat(base.filter(l => l !== knownLoc))
+      : base;
     let lastErr = null;
     for (const loc of locations) {
       try {
         await withTimeout(api.post({ url: '/quests/' + quest.id + '/enroll', body: { location: loc } }), 20000, 'enroll');
+        knownLoc = loc;
         return { ok: true, loc: loc };
       } catch(e) {
         const msg = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
         lastErr = msg;
+        log('  enroll location=' + loc + ' -> ' + msg);
         // Jesli Discord zada weryfikacji, dalsze proby nic nie dadza
         if (/captcha|verif/i.test(String(msg))) return { ok: false, err: msg, captcha: true };
       }
@@ -161,12 +171,13 @@ module.exports = `(async () => {
     log('Start: ' + name + ' [' + taskName + '] ' + secondsDone + '/' + secondsNeeded + 's');
 
     if (!(quest.userStatus && quest.userStatus.enrolledAt)) {
+      log('Zapisywanie do questa...');
       const e = await enroll(quest);
       if (!e.ok) {
         R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: !!e.captcha });
         return;
       }
-      log('Zapisano: ' + name);
+      log('Zapisano: ' + name + ' (location=' + e.loc + ')');
       await sleep(500);
     }
 
