@@ -16,6 +16,18 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:: Check Node.js version (need 18+)
+for /f "tokens=1 delims=v." %%a in ('node --version') do set NODE_MAJOR=%%a
+for /f "tokens=2 delims=v." %%a in ('node --version') do set NODE_MAJOR=%%a
+if %NODE_MAJOR% LSS 18 (
+    echo [ERROR] Node.js version is too old. Found: v%NODE_MAJOR%.x
+    echo         Playwright requires Node.js 18 or newer.
+    echo         Download from: https://nodejs.org/  (choose LTS)
+    pause
+    exit /b 1
+)
+echo Node.js version OK (v%NODE_MAJOR%.x)
+
 :: Check tokens.txt
 if not exist tokens.txt (
     echo [ERROR] tokens.txt not found.
