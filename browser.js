@@ -66,7 +66,14 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
   log('QuestsStore: ' + QuestsStore.quests.size + ' questów ogółem');
 
   // ── 5. Token z localStorage → do bezpośrednich wywołań fetch() ───────────
-  const raw = localStorage.getItem('token');
+  // Discord usuwa window.localStorage – odzyskaj przez iframe
+  let ls = window.localStorage;
+  if (!ls) {
+    const iframe = document.createElement('iframe');
+    document.body.appendChild(iframe);
+    ls = iframe.contentWindow.localStorage;
+  }
+  const raw = ls.getItem('token');
   const token = raw ? (raw.startsWith('"') ? JSON.parse(raw) : raw) : null;
   if (!token) return { fatal: 'Brak tokena w localStorage (przekierowanie na login?)' };
 
@@ -207,8 +214,15 @@ async function processToken(browser, token, index, total) {
     });
 
     // Krok 2: Wstrzyknij token do localStorage
+    // Discord usuwa window.localStorage – odzyskujemy go przez iframe
     await page.evaluate(tk => {
-      localStorage.setItem('token', JSON.stringify(tk));
+      let ls = window.localStorage;
+      if (!ls) {
+        const iframe = document.createElement('iframe');
+        document.body.appendChild(iframe);
+        ls = iframe.contentWindow.localStorage;
+      }
+      ls.setItem('token', JSON.stringify(tk));
     }, token.trim());
 
     log('→ token wstrzyknięty, ładowanie Discord...');
