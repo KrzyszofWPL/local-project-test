@@ -116,12 +116,19 @@ module.exports = `(async () => {
   // ── 4. Zapis do questa ────────────────────────────────────────────────────
   log('Znaleziono ' + pending.length + ' questow do zrobienia (z ' + all.length + ' widocznych)');
 
+  // Wywolania api Discorda potrafia nie wrocic wcale (rate limit, zerwana
+  // sesja). Bez limitu czasu petla stoi w milczeniu i wyglada jak zawieszona.
+  const withTimeout = (p, ms, label) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
+  ]);
+
   const enroll = async (quest) => {
     const locations = [11, 10, 8, 4, 2, 1, 0];
     let lastErr = null;
     for (const loc of locations) {
       try {
-        await api.post({ url: '/quests/' + quest.id + '/enroll', body: { location: loc } });
+        await withTimeout(api.post({ url: '/quests/' + quest.id + '/enroll', body: { location: loc } }), 20000, 'enroll');
         return { ok: true, loc: loc };
       } catch(e) {
         const msg = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
@@ -171,17 +178,32 @@ module.exports = `(async () => {
         const remaining = Math.min(speed, secondsNeeded - secondsDone);
         await sleep(remaining * 1000);
         const timestamp = secondsDone + speed;
-        const res = await api.post({
-          url: '/quests/' + quest.id + '/video-progress',
-          body: { timestamp: Math.min(secondsNeeded, timestamp + Math.random()) }
-        });
+        const t0 = Date.now();
+        let res;
+        try {
+          res = await withTimeout(api.post({
+            url: '/quests/' + quest.id + '/video-progress',
+            body: { timestamp: Math.min(secondsNeeded, timestamp + Math.random()) }
+          }), 30000, 'video-progress');
+        } catch(e) {
+          const msg = (e && e.body && e.body.message) || (e && e.message) || String(e);
+          log('video-progress nie powiodlo sie po ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
+          R({ t: 'qerr', id: quest.id, err: 'video-progress: ' + msg });
+          return;
+        }
         completed = res.body && res.body.completed_at != null;
         secondsDone = Math.min(secondsNeeded, timestamp);
         R({ t: 'qprog', id: quest.id, done: secondsDone, target: secondsNeeded });
+        log('video ' + secondsDone + '/' + secondsNeeded + 's (' + (Date.now()-t0) + 'ms)');
         if (timestamp >= secondsNeeded) break;
       }
       if (!completed) {
-        await api.post({ url: '/quests/' + quest.id + '/video-progress', body: { timestamp: secondsNeeded } });
+        try {
+          await withTimeout(api.post({
+            url: '/quests/' + quest.id + '/video-progress',
+            body: { timestamp: secondsNeeded }
+          }), 30000, 'video-progress final');
+        } catch(_) {}
       }
       R({ t: 'qdone', id: quest.id, orbs: orbs });
       return;
@@ -209,10 +231,10 @@ module.exports = `(async () => {
       while (true) {
         let res;
         try {
-          res = await api.post({
+          res = await withTimeout(api.post({
             url: '/quests/' + quest.id + '/heartbeat',
             body: { stream_key: streamKey, terminal: false }
-          });
+          }), 30000, 'heartbeat');
         } catch(e) {
           errA = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
           break;
@@ -287,10 +309,10 @@ module.exports = `(async () => {
       while (true) {
         let res2;
         try {
-          res2 = await api.post({
+          res2 = await withTimeout(api.post({
             url: '/quests/' + quest.id + '/heartbeat',
             body: { stream_key: null, terminal: false }
-          });
+          }), 30000, 'heartbeat');
         } catch(e) {
           failErr = (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
           break;
