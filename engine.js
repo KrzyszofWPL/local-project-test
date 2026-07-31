@@ -185,7 +185,7 @@ class Engine extends EventEmitter {
   async start(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('Nie ma konta ' + id);
-    if (acc.status === 'running' || acc.status === 'starting') return;
+    if (acc._running || acc.status === 'running' || acc.status === 'starting') return;
     this._push(acc, { status: 'starting', message: '', needsCaptcha: false, quests: [] });
     this._run(acc).catch(e => {
       this._push(acc, { status: 'error', message: e.message });
@@ -202,7 +202,8 @@ class Engine extends EventEmitter {
   }
 
   async startAll() {
-    const queue = this.accounts.filter(a => !['running', 'starting', 'done'].includes(a.status));
+    const queue = this.accounts.filter(a =>
+      !a._running && !['running', 'starting', 'done'].includes(a.status));
     let idx = 0;
     const worker = async () => {
       while (idx < queue.length) {
@@ -240,6 +241,19 @@ class Engine extends EventEmitter {
 
   // ── Właściwa praca dla jednego konta ──────────────────────────────────────
   async _run(acc) {
+    // Jedyna prawdziwa blokada: status w panelu moze byc nieaktualny przez
+    // wyscig miedzy /api/start a /api/start-all, wiec pilnujemy tego tutaj.
+    if (acc._running) return;
+    acc._running = true;
+
+    try {
+      await this._runInner(acc);
+    } finally {
+      acc._running = false;
+    }
+  }
+
+  async _runInner(acc) {
     const browser = await this._ensureBrowser();
 
     // Trwały profil = CAPTCHA rozwiązana raz zostaje rozwiązana
@@ -334,7 +348,14 @@ class Engine extends EventEmitter {
         break;
 
       case 'quests':
-        acc.quests = (ev.list ?? []).map(q => ({ ...q, state: 'pending' }));
+        // Zachowaj stan questow juz ukonczonych w tej sesji
+        {
+          const prev = new Map(acc.quests.map(q => [q.id, q]));
+          acc.quests = (ev.list ?? []).map(q => {
+            const old = prev.get(q.id);
+            return old && old.state === 'done' ? old : { ...q, state: 'pending' };
+          });
+        }
         this._push(acc, {
           message: `${ev.pending} questów do zrobienia (z ${ev.total} widocznych)`,
         });

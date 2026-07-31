@@ -8,6 +8,13 @@
  * UWAGA: wewnątrz tego stringa nie wolno używać backticków ani ${...}.
  */
 module.exports = `(async () => {
+  // Druga warstwa ochrony przed podwojnym uruchomieniem: nawet gdyby skrypt
+  // zostal wstrzykniety dwa razy w te sama strone, druga instancja konczy sie
+  // od razu. Dwie petle na tym samym koncie zapisywalyby sie do tego samego
+  // questa i wzajemnie wywolywaly limity zapytan.
+  if (window.__questBotActive) return { fatal: 'skrypt juz dziala w tej karcie' };
+  window.__questBotActive = true;
+
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const R = (o) => { try { window.__questReport(o); } catch(_) {} };
   const log = m => R({ t: 'log', m: String(m) });
@@ -379,5 +386,6 @@ module.exports = `(async () => {
   }
 
   R({ t: 'finished' });
+  window.__questBotActive = false;
   return { ok: true };
 })()`;
