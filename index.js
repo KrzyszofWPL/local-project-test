@@ -104,14 +104,11 @@ async function processAccount(token, index, total) {
 	try {
 		let quests = [];
 		try {
-			const data = await fetcher('/quests/authenticated/user');
+			const data = await fetcher('/quests/@me');
 			quests = Array.isArray(data) ? data : (data?.quests ?? []);
 		} catch (err) {
 			if (err.status === 401) throw err;
-			try {
-				const data = await fetcher('/users/@me/quests');
-				quests = Array.isArray(data) ? data : (data?.quests ?? []);
-			} catch (_) {}
+			console.error(`  [!] Błąd pobierania questów: ${err.message}`);
 		}
 
 		const pendingQuests = quests.filter((x) => 
