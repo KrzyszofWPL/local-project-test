@@ -15,31 +15,44 @@ const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
-// Questy PLAY_ON_DESKTOP są naliczane tylko klientom desktopowym. Backend
-// rozpoznaje typ klienta po nagłówku X-Super-Properties, więc podajemy się
-// za Discord Client (Electron) – spójnie w UA i w super properties.
-const CLIENT_VERSION = '1.0.9165';
-const BUILD_NUMBER = 332858;
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36';
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+const CLIENT_VERSION = '1.0.9165';
+const ELECTRON_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) discord/' + CLIENT_VERSION
   + ' Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36';
 
-const SUPER_PROPERTIES = Buffer.from(JSON.stringify({
-  os: 'Windows',
-  browser: 'Discord Client',
-  release_channel: 'stable',
-  client_version: CLIENT_VERSION,
-  os_version: '10.0.26100',
-  os_arch: 'x64',
-  app_arch: 'x64',
-  system_locale: 'pl',
-  browser_user_agent: UA,
-  browser_version: '32.2.7',
-  client_build_number: BUILD_NUMBER,
-  native_build_number: 55903,
-  client_event_source: null,
-})).toString('base64');
+/**
+ * Podmienia w nagłówku X-Super-Properties wyłącznie pola opisujące typ
+ * klienta, zachowując resztę – przede wszystkim client_build_number.
+ *
+ * Budowanie tego nagłówka od zera jest pułapką: przy nieaktualnym numerze
+ * builda Discord przestaje zwracać jakiekolwiek questy.
+ */
+function toDesktopSuperProperties(originalB64) {
+  if (!originalB64) return null;
+  let props;
+  try {
+    props = JSON.parse(Buffer.from(originalB64, 'base64').toString('utf-8'));
+  } catch (_) {
+    return null;
+  }
+  if (!props || typeof props !== 'object') return null;
+
+  return Buffer.from(JSON.stringify({
+    ...props,                       // client_build_number itd. zostają aktualne
+    os: 'Windows',
+    browser: 'Discord Client',
+    release_channel: props.release_channel ?? 'stable',
+    client_version: CLIENT_VERSION,
+    os_version: '10.0.26100',
+    os_arch: 'x64',
+    app_arch: 'x64',
+    browser_user_agent: ELECTRON_UA,
+    browser_version: '32.2.7',
+    native_build_number: 55903,
+  })).toString('base64');
+}
 
 class Engine extends EventEmitter {
   constructor() {
@@ -48,6 +61,7 @@ class Engine extends EventEmitter {
     this.browser = null;
     this.concurrency = parseInt(process.env.CONCURRENCY || '5', 10);
     this.headless = process.env.HEADLESS !== 'false';
+    this.desktopMode = process.env.DESKTOP_MODE === 'true';
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this._loadState();
     this.loadTokens();
@@ -108,6 +122,7 @@ class Engine extends EventEmitter {
       totals: this.totals,
       concurrency: this.concurrency,
       headless: this.headless,
+      desktopMode: this.desktopMode,
       accounts: this.accounts.map(a => {
         const target = a.quests.reduce((s, q) => s + (q.target || 0), 0);
         const done = a.quests.reduce((s, q) => s + Math.min(q.done || 0, q.target || 0), 0);
@@ -218,6 +233,11 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
+  setDesktopMode(v) {
+    this.desktopMode = !!v;
+    this.emit('update');
+  }
+
   // ── Właściwa praca dla jednego konta ──────────────────────────────────────
   async _run(acc) {
     const browser = await this._ensureBrowser();
@@ -237,22 +257,21 @@ class Engine extends EventEmitter {
     });
     acc._context = context;
 
-    // Podmień tożsamość klienta na desktopową we wszystkich żądaniach do API.
-    // Bez tego backend traktuje sesję jako webową i nie nalicza postępu
-    // questom typu PLAY_ON_DESKTOP.
-    await context.route('**/api/v*/**', async (route) => {
-      try {
-        const headers = {
-          ...route.request().headers(),
-          'x-super-properties': SUPER_PROPERTIES,
-          'x-discord-locale': 'pl-PL',
-          'x-discord-timezone': 'Europe/Warsaw',
-        };
-        await route.continue({ headers });
-      } catch (_) {
-        try { await route.continue(); } catch (_) {}
-      }
-    });
+    // Tryb desktop: podszywa sesję pod klienta desktopowego, co jest warunkiem
+    // naliczania questów PLAY_ON_DESKTOP. Domyślnie wyłączony, bo ingeruje
+    // w nagłówki, od których zależy też samo pobranie listy questów.
+    if (this.desktopMode) {
+      await context.route('**/api/v*/**', async (route) => {
+        try {
+          const headers = { ...route.request().headers() };
+          const patched = toDesktopSuperProperties(headers['x-super-properties']);
+          if (patched) headers['x-super-properties'] = patched;
+          await route.continue({ headers });
+        } catch (_) {
+          try { await route.continue(); } catch (_) {}
+        }
+      });
+    }
 
     const page = await context.newPage();
     page.setDefaultTimeout(0);

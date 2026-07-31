@@ -101,6 +101,10 @@ const server = http.createServer(async (req, res) => {
           engine.setHeadless(body.value);
           return json(res, 200, { ok: true });
 
+        case '/api/desktop-mode':
+          engine.setDesktopMode(body.value);
+          return json(res, 200, { ok: true });
+
         case '/api/reload-tokens':
           engine.loadTokens();
           return json(res, 200, { ok: true });

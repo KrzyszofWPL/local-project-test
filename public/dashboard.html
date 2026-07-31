@@ -163,6 +163,9 @@
   <label class="inline">
     <input type="checkbox" id="headed"> Pokaż okna przeglądarki
   </label>
+  <label class="inline" title="Podszywa sesję pod klienta desktopowego. Wymagane dla questów typu gra, ale Discord może wtedy przestać zwracać listę questów.">
+    <input type="checkbox" id="desktop"> Tryb desktop <span style="opacity:.6">(eksperymentalny)</span>
+  </label>
   <div class="sep"></div>
   <button id="btn-reload">↻ Wczytaj tokens.txt</button>
 </div>
@@ -207,6 +210,7 @@ function render(state) {
   const conc = document.getElementById('conc');
   if (document.activeElement !== conc) conc.value = state.concurrency;
   document.getElementById('headed').checked = !state.headless;
+  document.getElementById('desktop').checked = !!state.desktopMode;
 
   const grid = document.getElementById('grid');
 
@@ -304,6 +308,7 @@ document.getElementById('btn-stop-all').onclick  = () => post('/api/stop-all');
 document.getElementById('btn-reload').onclick    = () => post('/api/reload-tokens');
 document.getElementById('conc').onchange = e => post('/api/concurrency', { value: +e.target.value });
 document.getElementById('headed').onchange = e => post('/api/headless', { value: !e.target.checked });
+document.getElementById('desktop').onchange = e => post('/api/desktop-mode', { value: e.target.checked });
 
 // ── Strumień stanu ──────────────────────────────────────────────────────────
 function connect() {
