@@ -111,6 +111,7 @@
   .dot.error { background: var(--err); }
   @keyframes pulse { 0%,100% { opacity: 1 } 50% { opacity: .35 } }
 
+  .qerr { color: var(--err); cursor: help; }
   .qtask {
     font-size: 10px; padding: 1px 6px; border-radius: 4px; background: #21262d;
     color: var(--muted); white-space: nowrap;
@@ -150,6 +151,7 @@
     <div class="stat"><div class="v" id="t-active">0</div><div class="l">Aktywne</div></div>
     <div class="stat"><div class="v" id="t-quests">0</div><div class="l">Questy łącznie</div></div>
     <div class="stat orbs"><div class="v" id="t-orbs">0</div><div class="l">Orbs łącznie</div></div>
+    <div class="stat"><div class="v" id="t-fresh" style="font-size:13px;font-weight:500">–</div><div class="l">Odświeżono</div></div>
   </div>
 </header>
 
@@ -228,14 +230,24 @@ function render(state) {
 
     const quests = a.quests.length ? a.quests.map(q => {
       const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
+      const left = Math.max(0, (q.target || 0) - (q.done || 0));
+      let right;
+      if (q.state === 'error')      right = '<span class="qerr" title="' + esc(q.error || '') + '">błąd</span>';
+      else if (q.state === 'done')  right = '100% · gotowe';
+      else if (q.state === 'running') right = pct + '% · zostało ' + fmtTime(left);
+      else                          right = fmtTime(q.target);
       return `
         <div class="quest">
           <span class="dot ${q.state}"></span>
           <span class="qn" title="${esc(q.name)}">${esc(q.name)}</span>
           <span class="qtask">${TASK_PL[q.task] || q.task}</span>
-          <span class="qp">${q.state === 'error' ? '—' : pct + '% · ' + fmtTime(q.done) + '/' + fmtTime(q.target)}</span>
+          <span class="qp">${right}</span>
         </div>`;
     }).join('') : '<div class="quest"><span class="qp">Brak wykrytych questów</span></div>';
+
+    const qDone  = a.quests.filter(q => q.state === 'done').length;
+    const qTotal = a.quests.length;
+    const qPct   = qTotal ? Math.round((qDone / qTotal) * 100) : 0;
 
     const logs = a.logs.length
       ? a.logs.map(l => `<div>${esc(l.msg)}</div>`).join('')
@@ -260,11 +272,11 @@ function render(state) {
             uruchom to konto i przejdź weryfikację ręcznie — sesja zostanie zapamiętana.
           </div>` : ''}
 
-        <div class="bar"><i style="width:${a.percent}%"></i></div>
+        <div class="bar"><i style="width:${qPct}%"></i></div>
 
         <div class="kpis">
-          <div class="kpi"><div class="v">${a.percent}%</div><div class="l">Postęp</div></div>
-          <div class="kpi"><div class="v">${a.questsDone}</div><div class="l">Ukończone</div></div>
+          <div class="kpi"><div class="v">${qDone}/${qTotal || '–'}</div><div class="l">Questy</div></div>
+          <div class="kpi"><div class="v">${a.percent}%</div><div class="l">Czas</div></div>
           <div class="kpi orbs"><div class="v">${a.orbs}</div><div class="l">Orbs</div></div>
         </div>
 
@@ -311,10 +323,22 @@ document.getElementById('headed').onchange = e => post('/api/headless', { value:
 document.getElementById('desktop').onchange = e => post('/api/desktop-mode', { value: e.target.checked });
 
 // ── Strumień stanu ──────────────────────────────────────────────────────────
+let lastUpdateAt = Date.now();
+let connected = false;
+
+setInterval(() => {
+  const el = document.getElementById('t-fresh');
+  if (!connected) { el.textContent = 'brak połączenia'; el.style.color = 'var(--err)'; return; }
+  const s = Math.round((Date.now() - lastUpdateAt) / 1000);
+  el.style.color = '';
+  el.textContent = s < 2 ? 'teraz' : s + 's temu';
+}, 1000);
+
 function connect() {
   const es = new EventSource('/api/stream');
-  es.onmessage = e => render(JSON.parse(e.data));
-  es.onerror = () => { es.close(); setTimeout(connect, 1500); };
+  es.onopen = () => { connected = true; };
+  es.onmessage = e => { lastUpdateAt = Date.now(); connected = true; render(JSON.parse(e.data)); };
+  es.onerror = () => { connected = false; es.close(); setTimeout(connect, 1500); };
 }
 connect();
 </script>
