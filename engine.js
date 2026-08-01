@@ -133,6 +133,7 @@ class Engine extends EventEmitter {
           status: a.status,
           message: a.message,
           needsCaptcha: a.needsCaptcha,
+          desktopHint: !!a.desktopHint && !this.desktopMode,
           questsDone: a.questsDone,
           orbs: a.orbs,
           percent: target > 0 ? Math.round((done / target) * 100) : 0,
@@ -186,7 +187,9 @@ class Engine extends EventEmitter {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('Nie ma konta ' + id);
     if (acc._running || acc.status === 'running' || acc.status === 'starting') return;
-    this._push(acc, { status: 'starting', message: '', needsCaptcha: false, quests: [] });
+    this._push(acc, { status: 'starting', message: '', needsCaptcha: false,
+                      desktopHint: false, quests: [] });
+    acc._desktopHintShown = false;
     this._run(acc).catch(e => {
       this._push(acc, { status: 'error', message: e.message });
     });
@@ -404,6 +407,18 @@ class Engine extends EventEmitter {
         if (q) { q.state = 'error'; q.error = ev.err; }
         if (ev.captcha) this._push(acc, { needsCaptcha: true });
         this._log(acc, 'Błąd: ' + ev.err);
+
+        // Discord odmawia naliczania questów typu gra klientowi webowemu.
+        // Tryb desktop podszywa sesję pod aplikację i jest jedyną szansą,
+        // żeby te questy w ogóle ruszyły – warto o nim przypomnieć.
+        const isGameTask = q && ['PLAY_ON_DESKTOP', 'STREAM_ON_DESKTOP'].includes(q.task);
+        const unauthorized = /autoryz|unauthorized|401/i.test(String(ev.err));
+        if (isGameTask && unauthorized && !this.desktopMode && !acc._desktopHintShown) {
+          acc._desktopHintShown = true;
+          this._push(acc, { desktopHint: true });
+          this._log(acc, 'Wskazówka: włącz „Tryb desktop” u góry i uruchom ponownie – '
+            + 'bez niego Discord nie nalicza questów typu gra.');
+        }
         break;
       }
 

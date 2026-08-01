@@ -121,6 +121,10 @@
 
   .actions { display: flex; gap: 7px; padding: 11px 15px; border-top: 1px solid var(--border); }
 
+  .hint {
+    margin: 0 15px 11px; padding: 9px 11px; border-radius: 7px; font-size: 12.5px;
+    background: rgba(88,101,242,.12); border: 1px solid rgba(88,101,242,.35); color: #9aa5ff;
+  }
   .captcha {
     margin: 0 15px 11px; padding: 9px 11px; border-radius: 7px; font-size: 12.5px;
     background: rgba(210,153,34,.12); border: 1px solid rgba(210,153,34,.35); color: #e3b341;
@@ -268,6 +272,12 @@ function render(state) {
         </div>
 
         <div class="msg">${esc(a.message || '')}</div>
+
+        ${a.desktopHint ? `
+          <div class="hint">
+            Discord odmówił naliczania questów typu <b>gra</b> temu kontu
+            (401). Zaznacz <b>Tryb desktop</b> u góry i uruchom ponownie.
+          </div>` : ''}
 
         ${a.needsCaptcha ? `
           <div class="captcha">
