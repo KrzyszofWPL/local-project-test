@@ -264,7 +264,10 @@ class Engine extends EventEmitter {
     fs.mkdirSync(profileDir, { recursive: true });
 
     const context = await browser.newContext({
-      userAgent: UA,
+      // Discord odrzuca heartbeaty questow-gier bledem 401, jesli User-Agent
+      // nie zawiera wersji Electrona. To sam naglowek decyduje, nie tylko
+      // X-Super-Properties.
+      userAgent: this.desktopMode ? ELECTRON_UA : UA,
       locale: 'pl-PL',
       timezoneId: 'Europe/Warsaw',
       viewport: { width: 1280, height: 800 },
@@ -283,6 +286,7 @@ class Engine extends EventEmitter {
           const headers = { ...route.request().headers() };
           const patched = toDesktopSuperProperties(headers['x-super-properties']);
           if (patched) headers['x-super-properties'] = patched;
+          headers['user-agent'] = ELECTRON_UA;
           await route.continue({ headers });
         } catch (_) {
           try { await route.continue(); } catch (_) {}

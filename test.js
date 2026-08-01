@@ -103,6 +103,19 @@ function restoreTokens() {
     assert.strictEqual(out.browser, 'Discord Client', 'typ klienta musi zostać podmieniony');
   });
 
+  await test('tryb desktop wysyła User-Agent z wersją Electrona', async () => {
+    const s = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
+    const ua = s.match(/const ELECTRON_UA =[\s\S]*?';\n/)[0];
+    assert.ok(/Electron\/\d+\.\d+/.test(ua),
+      'User-Agent musi zawierać wersję Electrona – bez niej Discord odrzuca '
+      + 'heartbeaty questów-gier błędem 401');
+
+    assert.ok(s.includes('this.desktopMode ? ELECTRON_UA : UA'),
+      'kontekst przeglądarki musi używać Electron UA w trybie desktop');
+    assert.ok(s.includes("headers['user-agent'] = ELECTRON_UA"),
+      'żądania do API muszą mieć nadpisany User-Agent, nie tylko super properties');
+  });
+
   // ── Skrypt wstrzykiwany ──────────────────────────────────────────────────
   await test('skrypt wstrzykiwany jest poprawnym JS-em', async () => {
     const s = require('./inject.js');
