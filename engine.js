@@ -246,6 +246,51 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
+  /**
+   * Reads name, e-mail and avatar for one account without launching a page.
+   * Uses the account's own proxy, so it neither leaks the real IP nor stacks
+   * every account's request on one address.
+   */
+  async refreshIdentity(id) {
+    const acc = this.accounts.find(a => a.id === String(id));
+    if (!acc) throw new Error('No such account: ' + id);
+
+    let request;
+    try {
+      ({ request } = require('playwright'));
+    } catch (_) {
+      throw new Error('Playwright is not installed. Run: npm install');
+    }
+
+    const api = await request.newContext({
+      proxy: acc.proxy ? {
+        server: acc.proxy.server,
+        username: acc.proxy.username ?? undefined,
+        password: acc.proxy.password ?? undefined,
+      } : undefined,
+      timeout: 20000,
+    });
+    try {
+      return await this._fetchIdentity(acc, { request: api });
+    } finally {
+      try { await api.dispose(); } catch (_) {}
+    }
+  }
+
+  /** Same for every account – one request each, a few at a time. */
+  async refreshAllIdentities() {
+    const queue = this.accounts.slice();
+    let next = 0;
+    const worker = async () => {
+      while (next < queue.length) {
+        const acc = queue[next++];
+        try { await this.refreshIdentity(acc.id); } catch (_) {}
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(5, queue.length) }, worker));
+    return this.accounts.filter(a => a.username).length;
+  }
+
   /** Sends one request through the account's proxy and reports the exit IP. */
   async testProxy(id) {
     const acc = this.accounts.find(a => a.id === String(id));
@@ -363,6 +408,48 @@ class Engine extends EventEmitter {
   _push(acc, patch) {
     Object.assign(acc, patch);
     this.emit('update');
+  }
+
+  /** Identity survives restarts, so the list is readable before anything runs. */
+  _setIdentity(acc, id) {
+    this._push(acc, id);
+    this._history[acc.id] = { ...(this._history[acc.id] ?? {}), ...id };
+    this._saveState();
+  }
+
+  /**
+   * Asks Discord who this token belongs to.
+   *
+   * Reading it out of the client's own stores only works once the whole app
+   * has booted and the webpack module shapes still match, which is exactly
+   * the thing that quietly breaks. One documented request costs nothing and
+   * fills the account list even for accounts that never get as far as
+   * loading Discord.
+   */
+  async _fetchIdentity(acc, context) {
+    try {
+      const res = await context.request.get('https://discord.com/api/v9/users/@me', {
+        headers: { authorization: acc.token.trim() },
+        timeout: 20000,
+      });
+      if (res.status() === 401) throw new Error('token rejected (401) – invalid or expired');
+      if (!res.ok()) throw new Error('HTTP ' + res.status());
+
+      const u = await res.json();
+      this._setIdentity(acc, {
+        username: u.username ?? null,
+        globalName: u.global_name ?? null,
+        discordId: u.id ?? null,
+        avatar: u.avatar ?? null,
+        email: u.email ?? null,
+      });
+      this._log(acc, `Signed in as ${u.global_name || u.username}`
+        + ` (${u.email || 'e-mail hidden'})`);
+      return true;
+    } catch (e) {
+      this._log(acc, 'Could not read account details: ' + shortError(e));
+      return false;
+    }
   }
 
   _log(acc, msg) {
@@ -571,6 +658,11 @@ class Engine extends EventEmitter {
         });
       }
 
+      // Before the slow part: fills in the name, e-mail and avatar right away
+      // and catches a dead token without waiting for a full Discord load.
+      this._push(acc, { message: 'Checking the account…' });
+      await this._fetchIdentity(acc, context);
+
       const page = await context.newPage();
       page.setDefaultTimeout(0);
       page.on('dialog', d => d.dismiss().catch(() => {}));
@@ -627,22 +719,13 @@ class Engine extends EventEmitter {
         break;
 
       case 'user':
-        this._push(acc, {
+        this._setIdentity(acc, {
           username: ev.username,
           globalName: ev.globalName ?? null,
           discordId: ev.id ?? null,
           avatar: ev.avatar ?? null,
           email: ev.email ?? null,
         });
-        this._history[acc.id] = {
-          ...(this._history[acc.id] ?? {}),
-          username: ev.username,
-          globalName: ev.globalName ?? null,
-          discordId: ev.id ?? null,
-          avatar: ev.avatar ?? null,
-          email: ev.email ?? null,
-        };
-        this._saveState();
         break;
 
       case 'skipped':
@@ -666,7 +749,8 @@ class Engine extends EventEmitter {
 
       case 'qstart': {
         const q = acc.quests.find(x => x.id === ev.id);
-        if (q) Object.assign(q, { state: 'running', done: ev.done, target: ev.target });
+        if (q) Object.assign(q, { state: 'running', done: ev.done, target: ev.target,
+                                  error: null });
         this._push(acc, { message: 'In progress: ' + ev.name });
         break;
       }
@@ -696,9 +780,17 @@ class Engine extends EventEmitter {
       }
 
       case 'qretry': {
+        // Parked, not failed – the injected script already logged why, so
+        // this only moves the quest back to a waiting state in the panel.
         const q = acc.quests.find(x => x.id === ev.id);
-        if (q) { q.state = 'waiting'; q.error = ev.err; }
-        this._log(acc, 'Rate limited – will retry shortly');
+        if (q) {
+          q.state = 'waiting';
+          q.error = ev.err;
+          q.attempt = ev.attempt;
+          q.maxAttempts = ev.max;
+          q.rateLimited = !!ev.rateLimited;
+        }
+        this.emit('update');
         break;
       }
 

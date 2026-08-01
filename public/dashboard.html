@@ -523,6 +523,10 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             <span class="ms accent">key</span>
             <span class="panel-title">Accounts from tokens.txt</span>
             <span class="spacer"></span>
+            <button class="btn btn-ghost small" id="btn-refresh-accounts"
+              title="Reads name, e-mail and avatar for every account (one request each)">
+              <span class="ms">badge</span> Load account details
+            </button>
             <span class="panel-meta" id="accounts-meta">0 ACCOUNTS</span>
           </div>
           <div class="table-head wide">
@@ -880,6 +884,18 @@ async function copyPlain(text, what) {
   }
 }
 
+async function refreshAccount(id) {
+  try {
+    const res = await fetch('/api/refresh-account', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast('Account details reloaded');
+  } catch (e) {
+    toast('Could not reload details: ' + e.message, true);
+  }
+}
+
 async function testProxy(id) {
   const acc = state && state.accounts.find(a => a.id === id);
   toast('Testing proxy' + (acc && acc.proxy ? ' ' + acc.proxy.label : '') + '…');
@@ -993,11 +1009,17 @@ function questProgressText(a) {
   return total ? done + ' / ' + total + ' quests' : '— / —';
 }
 
+/** What a parked quest is waiting for – it will be tried again, not dropped. */
+function retryNote(q) {
+  const of = q.attempt ? ' ' + q.attempt + '/' + (q.maxAttempts || 3) : '';
+  return (q.rateLimited ? 'rate limited' : 'failed') + ' – retry' + of + ' queued';
+}
+
 function questLine(q) {
   const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
   const left = Math.max(0, (q.target || 0) - (q.done || 0));
   let right, cls = '';
-  if (q.state === 'waiting')      { right = 'waiting on rate limit…'; cls = ' wait'; }
+  if (q.state === 'waiting')      { right = retryNote(q); cls = ' wait'; }
   else if (q.state === 'error')   { right = 'error'; cls = ' err'; }
   else if (q.state === 'done')    { right = '100% · done'; }
   else if (q.state === 'running') { right = pct + '% · ' + fmtTime(left) + ' left'; }
@@ -1108,6 +1130,8 @@ function accountMenu(a) {
       <span class="ms">alternate_email</span> Copy e-mail</button>
     <button data-act="copy-id" data-id="${a.id}" ${a.discordId ? '' : 'disabled'}>
       <span class="ms">badge</span> Copy user ID</button>
+    <button data-act="refresh-account" data-id="${a.id}">
+      <span class="ms">refresh</span> Reload details</button>
     <div class="sep"></div>
     <button data-act="copy-proxy" data-id="${a.id}" ${a.proxy ? '' : 'disabled'}>
       <span class="ms">lan</span> Copy proxy</button>
@@ -1163,7 +1187,7 @@ function renderQuests() {
         : q.state === 'running' ? 'running' : q.state === 'waiting' ? 'waiting' : 'idle';
       const qDot = q.state === 'running' ? 'pulse' : q.state === 'error' ? 'err'
         : q.state === 'waiting' ? 'warn' : q.state === 'done' ? 'ok' : 'idle';
-      const note = q.state === 'waiting' ? 'waiting on rate limit…'
+      const note = q.state === 'waiting' ? retryNote(q)
         : q.state === 'error' ? (q.error || 'error')
         : q.state === 'running' ? fmtTime(Math.max(0, (q.target || 0) - (q.done || 0))) + ' left'
         : q.state === 'done' ? 'done' : 'pending';
@@ -1402,6 +1426,7 @@ document.addEventListener('click', e => {
       'copy-email': () => copyPlain(acc && acc.email, 'E-mail'),
       'copy-id':    () => copyPlain(acc && acc.discordId, 'User ID'),
       'test-proxy': () => testProxy(id),
+      'refresh-account': () => refreshAccount(id),
     };
     const handler = menuActions[act.dataset.act];
     if (handler) {
@@ -1455,6 +1480,22 @@ $('btn-reload-proxies').onclick = async () => {
   const data = await res.json().catch(() => ({}));
   toast(`ip.txt reloaded – ${data.count ?? 0} proxies`);
 };
+$('btn-refresh-accounts').onclick = async () => {
+  const btn = $('btn-refresh-accounts');
+  btn.disabled = true;
+  toast('Reading account details…');
+  try {
+    const res = await post('/api/refresh-accounts');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast(`Details loaded for ${data.known} of ${state.accounts.length} accounts`);
+  } catch (e) {
+    toast('Could not load details: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
 $('btn-test-proxies').onclick = async () => {
   const res = await post('/api/proxy-test-all');
   const data = await res.json().catch(() => ({}));

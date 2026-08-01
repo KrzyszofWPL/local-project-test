@@ -96,6 +96,13 @@ const server = http.createServer(async (req, res) => {
         case '/api/proxy-test-all':
           return json(res, 200, { ok: true, total: engine.testAllProxies().total });
 
+        case '/api/refresh-account':
+          await engine.refreshIdentity(body.id);
+          return json(res, 200, { ok: true });
+
+        case '/api/refresh-accounts':
+          return json(res, 200, { ok: true, known: await engine.refreshAllIdentities() });
+
         case '/api/use-proxies':
           engine.setUseProxies(body.value);
           return json(res, 200, { ok: true });

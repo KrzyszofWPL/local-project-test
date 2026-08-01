@@ -78,7 +78,36 @@ module.exports = `(async () => {
   }
 
   // ── 3. Wait for quests ────────────────────────────────────────────────────
-  for (let i = 0; i < 30 && QuestsStore.quests.size === 0; i++) await sleep(1000);
+  for (let i = 0; i < 45 && QuestsStore.quests.size === 0; i++) await sleep(1000);
+
+  // The store hands out camelCase objects, the raw API answers in snake_case.
+  // Normalising once means nothing downstream has to care which one it got.
+  const camel = (v) => {
+    if (Array.isArray(v)) return v.map(camel);
+    if (v && typeof v === 'object' && v.constructor === Object) {
+      const out = {};
+      for (const k of Object.keys(v)) {
+        out[k.replace(/_([a-z0-9])/g, (m, c) => c.toUpperCase())] = camel(v[k]);
+      }
+      return out;
+    }
+    return v;
+  };
+
+  // On some accounts the client never pushes the quest list into the store -
+  // it only fetches it once something asks. Asking the API directly beats
+  // reporting "no quests" on an account that has plenty.
+  let apiQuests = [];
+  if (QuestsStore.quests.size === 0) {
+    try {
+      const res = await api.get({ url: '/quests/@me' });
+      const raw = (res && res.body && (res.body.quests || res.body)) || [];
+      apiQuests = (Array.isArray(raw) ? raw : []).map(camel);
+      log('QuestsStore stayed empty - fetched ' + apiQuests.length + ' quest(s) from the API');
+    } catch(e) {
+      log('QuestsStore is empty and /quests/@me failed: ' + ((e && e.message) || e));
+    }
+  }
 
   const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
 
@@ -113,7 +142,7 @@ module.exports = `(async () => {
     name: (r.messages && (r.messages.name || r.messages.nameWithArticle)) || r.name || null,
   }));
 
-  const all = [...QuestsStore.quests.values()];
+  const all = apiQuests.length ? apiQuests : [...QuestsStore.quests.values()];
   const pending = all.filter(q => {
     const tc = q.config && (q.config.taskConfig || q.config.taskConfigV2);
     return q.config && !(q.userStatus && q.userStatus.completedAt)
@@ -283,13 +312,12 @@ module.exports = `(async () => {
       log('Enrolling in quest...');
       const e = await enroll(quest);
       if (!e.ok) {
-        if (e.rateLimited) {
-          // Retry later - do not mark as permanently failed
-          R({ t: 'qretry', id: quest.id, err: e.err });
-          return { retry: true };
+        // A CAPTCHA needs a human - there is nothing to come back to later.
+        if (e.captcha) {
+          R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: true });
+          return;
         }
-        R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: !!e.captcha });
-        return;
+        return { retry: true, err: 'enroll: ' + e.err, rateLimited: !!e.rateLimited };
       }
       log('Enrolled: ' + name + ' (location=' + e.loc + ')');
       await sleep(500);
@@ -311,8 +339,7 @@ module.exports = `(async () => {
         } catch(e) {
           const msg = errMsg(e);
           log('video-progress failed after ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
-          R({ t: 'qerr', id: quest.id, err: 'video-progress: ' + msg });
-          return;
+          return { retry: true, err: 'video-progress: ' + msg, rateLimited: isRateLimit(e) };
         }
         completed = res.body && res.body.completed_at != null;
         secondsDone = Math.min(secondsNeeded, timestamp);
@@ -378,8 +405,8 @@ module.exports = `(async () => {
         await sleep(20000);
       }
 
-      if (okA) R({ t: 'qdone', id: quest.id, orbs: orbs });
-      else R({ t: 'qerr', id: quest.id, err: errA || 'unknown error' });
+      if (!okA) return { retry: true, err: errA || 'unknown error' };
+      R({ t: 'qdone', id: quest.id, orbs: orbs });
       return;
     }
 
@@ -460,8 +487,8 @@ module.exports = `(async () => {
       }
 
       restore();
-      if (ok) R({ t: 'qdone', id: quest.id, orbs: orbs });
-      else R({ t: 'qerr', id: quest.id, err: failErr || 'unknown error' });
+      if (!ok) return { retry: true, err: failErr || 'unknown error' };
+      R({ t: 'qdone', id: quest.id, orbs: orbs });
       return;
     }
 
@@ -472,9 +499,20 @@ module.exports = `(async () => {
     }
   };
 
+  // ── 6. Queue ──────────────────────────────────────────────────────────────
+  // A quest that fails is parked at the back of the queue rather than written
+  // off: the same quest that errors on one account goes through on the next,
+  // and often goes through on this one too once the account has done
+  // something else in between. Only a failure a human has to clear (a CAPTCHA,
+  // a missing voice channel) is final straight away.
+  const MAX_ATTEMPTS = 3;
+  const RETRY_PAUSE = 30000;
+
+  const nameOf = q => (q.config && q.config.messages && q.config.messages.questName) || q.id;
+
   // Spacing between quests keeps us below the rate-limit threshold.
   const queue = selected.slice();
-  const retries = {};
+  const attempts = {};
   let first = true;
 
   while (queue.length) {
@@ -486,24 +524,35 @@ module.exports = `(async () => {
     try {
       outcome = await doQuest(quest);
     } catch(e) {
-      const msg = errMsg(e);
-      if (isRateLimit(e)) {
-        outcome = { retry: true };
-      } else {
-        R({ t: 'qerr', id: quest.id, err: msg });
-      }
+      outcome = { retry: true, err: errMsg(e), rateLimited: isRateLimit(e) };
     }
 
-    if (outcome && outcome.retry) {
-      retries[quest.id] = (retries[quest.id] || 0) + 1;
-      if (retries[quest.id] <= 2) {
-        log('Rate limited - ' + ((quest.config.messages && quest.config.messages.questName) || quest.id)
-            + ' will re-queue (attempt ' + retries[quest.id] + '/2)');
-        await sleep(30000);
-        queue.push(quest);
-      } else {
-        R({ t: 'qerr', id: quest.id, err: 'Discord rate limit - try again in a few minutes' });
-      }
+    // Finished, or already reported as permanently failed.
+    if (!outcome || !outcome.retry) continue;
+
+    attempts[quest.id] = (attempts[quest.id] || 0) + 1;
+    const used = attempts[quest.id];
+    const qname = nameOf(quest);
+
+    if (used >= MAX_ATTEMPTS) {
+      R({ t: 'qerr', id: quest.id,
+          err: outcome.err + ' (gave up after ' + used + ' attempts)' });
+      log('Giving up on ' + qname + ' after ' + used + ' attempts: ' + outcome.err);
+      continue;
+    }
+
+    R({ t: 'qretry', id: quest.id, err: outcome.err, attempt: used, max: MAX_ATTEMPTS,
+        rateLimited: !!outcome.rateLimited });
+    log((outcome.rateLimited ? 'Rate limited on ' : 'Failed: ') + qname
+        + ' (' + outcome.err + ') - moving on, will come back to it ['
+        + used + '/' + MAX_ATTEMPTS + ']');
+    queue.push(quest);
+
+    // It was the last one, so there is nothing else to get on with in the
+    // meantime - wait instead of retrying the same thing immediately.
+    if (queue.length === 1) {
+      log('Nothing else queued - waiting ' + (RETRY_PAUSE / 1000) + 's before retrying ' + qname);
+      await sleep(RETRY_PAUSE);
     }
   }
 

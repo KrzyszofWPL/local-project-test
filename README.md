@@ -24,6 +24,14 @@ its avatar, its full display name and `@handle`, its full e-mail address, the
 proxy it uses, its state, quest count and orbs. The `⋮` menu at the end of each
 row copies the token, the e-mail or the user ID, and can test the proxy.
 
+Those details come from one `GET /users/@me` per account, sent through that
+account's proxy. It happens automatically before an account starts, and
+**Load account details** in the Accounts header does it for every account
+without running anything. The result is remembered in `state.json`, so the list
+stays readable across restarts. Avatars themselves come straight from
+`cdn.discordapp.com`, which needs no authentication and has no rate limit worth
+worrying about.
+
 Tokens are never part of the live state the page receives – the panel asks the
 server for one only when you click **Copy token**.
 
@@ -95,6 +103,24 @@ usually flagged those IPs long ago, so you trade a `429` for a CAPTCHA or a lock
 account. A hostile proxy cannot read your HTTPS traffic, but it can refuse it or
 try to intercept it, which just breaks the run. Run **Test all proxies** after
 pasting such a list to see how few of them answer at all.
+
+## When a quest fails
+
+Quests fail unevenly – the same quest goes through on one account and errors on
+another, and often works on the second try. So a failed quest is parked at the
+back of the queue instead of being written off: the account gets on with its
+other quests and comes back to it afterwards. If it was the last one left, the
+account waits 30 seconds and tries again. After three attempts the quest is
+reported as failed for real.
+
+Failures that a human has to clear are final straight away – a CAPTCHA, a
+missing voice channel for `PLAY_ACTIVITY`, or `STREAM_ON_DESKTOP`, which needs
+someone else in a voice channel with you.
+
+If an account reports no quests at all while the others are fine, the script now
+waits longer for the client to populate its store and then asks
+`GET /quests/@me` directly, so a store that never fills stops looking like an
+account with nothing to do.
 
 ## Settings
 
