@@ -62,6 +62,7 @@ class Engine extends EventEmitter {
     this.concurrency = parseInt(process.env.CONCURRENCY || '5', 10);
     this.headless = process.env.HEADLESS !== 'false';
     this.desktopMode = process.env.DESKTOP_MODE === 'true';
+    this.onlyOrbs = process.env.ONLY_ORBS !== 'false';
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this._loadState();
     this.loadTokens();
@@ -123,6 +124,7 @@ class Engine extends EventEmitter {
       concurrency: this.concurrency,
       headless: this.headless,
       desktopMode: this.desktopMode,
+      onlyOrbs: this.onlyOrbs,
       accounts: this.accounts.map(a => {
         const target = a.quests.reduce((s, q) => s + (q.target || 0), 0);
         const done = a.quests.reduce((s, q) => s + Math.min(q.done || 0, q.target || 0), 0);
@@ -138,6 +140,7 @@ class Engine extends EventEmitter {
           orbs: a.orbs,
           percent: target > 0 ? Math.round((done / target) * 100) : 0,
           quests: a.quests,
+          skipped: a.skipped ?? [],
           logs: a.logs.slice(-40),
         };
       }),
@@ -188,7 +191,7 @@ class Engine extends EventEmitter {
     if (!acc) throw new Error('Nie ma konta ' + id);
     if (acc._running || acc.status === 'running' || acc.status === 'starting') return;
     this._push(acc, { status: 'starting', message: '', needsCaptcha: false,
-                      desktopHint: false, quests: [] });
+                      desktopHint: false, quests: [], skipped: [] });
     acc._desktopHintShown = false;
     this._run(acc).catch(e => {
       this._push(acc, { status: 'error', message: e.message });
@@ -239,6 +242,11 @@ class Engine extends EventEmitter {
 
   setDesktopMode(v) {
     this.desktopMode = !!v;
+    this.emit('update');
+  }
+
+  setOnlyOrbs(v) {
+    this.onlyOrbs = !!v;
     this.emit('update');
   }
 
@@ -321,6 +329,7 @@ class Engine extends EventEmitter {
       await page.waitForTimeout(12000);
 
       this._push(acc, { message: 'Szukanie questów…' });
+      await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       const result = await page.evaluate(INJECT_SCRIPT);
 
       // Zapisz sesję, żeby kolejny start nie wymagał ponownej weryfikacji
@@ -352,6 +361,11 @@ class Engine extends EventEmitter {
       case 'user':
         this._push(acc, { username: ev.username });
         this._history[acc.id] = { ...(this._history[acc.id] ?? {}), username: ev.username };
+        break;
+
+      case 'skipped':
+        acc.skipped = (ev.list ?? []).map(q => ({ ...q, state: 'skipped' }));
+        this.emit('update');
         break;
 
       case 'quests':

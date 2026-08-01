@@ -167,6 +167,25 @@ function restoreTokens() {
       `bezpośrednie wywołania api poza warstwą apiCall: ${direct}`);
   });
 
+  await test('orbs liczone tylko z pola orb_quantity', async () => {
+    const s = require('./inject.js');
+    const m = s.match(/const orbsOf = \(q\) => \{[\s\S]*?\n  \};/);
+    assert.ok(m, 'nie znaleziono orbsOf');
+    assert.ok(!/r\.quantity|r\.amount/.test(m[0]),
+      'orbsOf nie może sumować zwykłego quantity – nagrody kosmetyczne liczyłyby się jako orby');
+    assert.ok(/orb_?[Qq]uantity/.test(m[0]), 'orbsOf musi czytać pole orb_quantity');
+  });
+
+  await test('questy bez orbs można pominąć', async () => {
+    const s = require('./inject.js');
+    assert.ok(s.includes('onlyOrbs'), 'brak opcji pomijania questów bez orbs');
+    assert.ok(s.includes("t: 'skipped'"), 'pominięte questy muszą być raportowane do panelu');
+
+    const eng = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
+    assert.ok(eng.includes('window.__questOpts'),
+      'opcje muszą być przekazane do strony przed wstrzyknięciem skryptu');
+  });
+
   // ── Panel ────────────────────────────────────────────────────────────────
   await test('JS panelu jest poprawny składniowo', async () => {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'dashboard.html'), 'utf-8');

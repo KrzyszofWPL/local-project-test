@@ -171,6 +171,9 @@
   <label class="inline">
     <input type="checkbox" id="headed"> Pokaż okna przeglądarki
   </label>
+  <label class="inline" title="Pomija questy, które nie dają orbs (np. tylko ramka awatara lub efekt profilu).">
+    <input type="checkbox" id="onlyorbs"> Tylko questy z orbs
+  </label>
   <label class="inline" title="Podszywa sesję pod klienta desktopowego. Wymagane dla questów typu gra, ale Discord może wtedy przestać zwracać listę questów.">
     <input type="checkbox" id="desktop"> Tryb desktop <span style="opacity:.6">(eksperymentalny)</span>
   </label>
@@ -189,6 +192,12 @@ const TASK_PL = {
   WATCH_VIDEO: 'wideo', WATCH_VIDEO_ON_MOBILE: 'wideo',
   PLAY_ON_DESKTOP: 'gra', STREAM_ON_DESKTOP: 'stream', PLAY_ACTIVITY: 'aktywność',
 };
+
+function rewardLabel(rewards) {
+  if (!rewards || !rewards.length) return 'brak nagród';
+  const names = rewards.map(r => r.name).filter(Boolean);
+  return names.length ? names.join(', ') : 'nagroda kosmetyczna';
+}
 
 const fmtTime = (s) => {
   s = Math.max(0, Math.round(s));
@@ -219,6 +228,7 @@ function render(state) {
   if (document.activeElement !== conc) conc.value = state.concurrency;
   document.getElementById('headed').checked = !state.headless;
   document.getElementById('desktop').checked = !!state.desktopMode;
+  document.getElementById('onlyorbs').checked = state.onlyOrbs !== false;
 
   const grid = document.getElementById('grid');
 
@@ -295,6 +305,20 @@ function render(state) {
 
         <div class="quests">${quests}</div>
 
+        ${(a.skipped && a.skipped.length) ? `
+          <details class="logs skipped">
+            <summary>Pominięte – bez orbs (${a.skipped.length})</summary>
+            <div class="quests">
+              ${a.skipped.map(q => `
+                <div class="quest">
+                  <span class="dot"></span>
+                  <span class="qn" title="${esc(q.name)}">${esc(q.name)}</span>
+                  <span class="qtask">${TASK_PL[q.task] || q.task}</span>
+                  <span class="qp">${esc(rewardLabel(q.rewards))}</span>
+                </div>`).join('')}
+            </div>
+          </details>` : ''}
+
         <div class="actions">
           <button class="sm primary" data-act="start" data-id="${a.id}" ${busy ? 'disabled' : ''}>▶ Start</button>
           <button class="sm danger"  data-act="stop"  data-id="${a.id}" ${busy ? '' : 'disabled'}>■ Stop</button>
@@ -334,6 +358,7 @@ document.getElementById('btn-reload').onclick    = () => post('/api/reload-token
 document.getElementById('conc').onchange = e => post('/api/concurrency', { value: +e.target.value });
 document.getElementById('headed').onchange = e => post('/api/headless', { value: !e.target.checked });
 document.getElementById('desktop').onchange = e => post('/api/desktop-mode', { value: e.target.checked });
+document.getElementById('onlyorbs').onchange = e => post('/api/only-orbs', { value: e.target.checked });
 
 // ── Strumień stanu ──────────────────────────────────────────────────────────
 let lastUpdateAt = Date.now();

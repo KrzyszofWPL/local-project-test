@@ -74,18 +74,36 @@ module.exports = `(async () => {
 
   const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
 
-  const orbsOf = (q) => {
+  const opts = window.__questOpts || {};
+  const onlyOrbs = !!opts.onlyOrbs;
+
+  const rewardsOf = (q) => {
     try {
       const rc = q.config.rewardsConfig || q.config.rewards_config;
-      const rewards = (rc && (rc.rewards || rc.rewardsExpireAt ? rc.rewards : null)) || [];
-      let sum = 0;
-      for (const r of rewards) {
-        const n = r.orbQuantity || r.orb_quantity || r.quantity || r.amount;
-        if (typeof n === 'number') sum += n;
-      }
-      return sum;
-    } catch(_) { return 0; }
+      const r = rc && rc.rewards;
+      return Array.isArray(r) ? r : [];
+    } catch(_) { return []; }
   };
+
+  // Orby maja wlasne pole ilosci. Poprzednia wersja sumowala tez zwykle
+  // 'quantity', przez co nagrody kosmetyczne (ramki, efekty profilu) liczyly
+  // sie jako orby.
+  const orbsOf = (q) => {
+    let sum = 0;
+    for (const r of rewardsOf(q)) {
+      const n = r.orbQuantity != null ? r.orbQuantity : r.orb_quantity;
+      if (typeof n === 'number') sum += n;
+    }
+    return sum;
+  };
+
+  // Opis nagrod do panelu i do diagnostyki - pozwala sprawdzic, czy
+  // wykrywanie orbow dziala na realnych danych.
+  const rewardInfo = (q) => rewardsOf(q).map(r => ({
+    type: r.type,
+    orbs: r.orbQuantity != null ? r.orbQuantity : r.orb_quantity,
+    name: (r.messages && (r.messages.name || r.messages.nameWithArticle)) || r.name || null,
+  }));
 
   const all = [...QuestsStore.quests.values()];
   const pending = all.filter(q => {
@@ -105,8 +123,35 @@ module.exports = `(async () => {
   };
   pending.sort((a, b) => (PRIORITY[taskOf(a)] ?? 9) - (PRIORITY[taskOf(b)] ?? 9));
 
-  R({ t: 'quests', total: all.length, pending: pending.length,
-      list: pending.map(q => {
+  // Pomin questy bez orbow (np. tylko ramka awatara) - jesli tak ustawiono
+  const skipped = [];
+  let selected = pending;
+  if (onlyOrbs) {
+    selected = [];
+    for (const q of pending) {
+      if (orbsOf(q) > 0) selected.push(q);
+      else skipped.push(q);
+    }
+    if (skipped.length) {
+      log('Pominieto ' + skipped.length + ' questow bez orbow: '
+        + skipped.map(q => (q.config.messages && q.config.messages.questName) || q.id).join(', '));
+    }
+  }
+
+  R({ t: 'skipped', list: skipped.map(q => {
+    const tc = q.config.taskConfig || q.config.taskConfigV2;
+    const task = SUPPORTED.find(t => tc.tasks[t] != null);
+    return {
+      id: q.id,
+      name: (q.config.messages && q.config.messages.questName) || q.id,
+      task: task,
+      target: tc.tasks[task].target,
+      rewards: rewardInfo(q),
+    };
+  }) });
+
+  R({ t: 'quests', total: all.length, pending: selected.length,
+      list: selected.map(q => {
         const tc = q.config.taskConfig || q.config.taskConfigV2;
         const task = SUPPORTED.find(t => tc.tasks[t] != null);
         return {
@@ -116,12 +161,13 @@ module.exports = `(async () => {
           target: tc.tasks[task].target,
           done: (q.userStatus && q.userStatus.progress && q.userStatus.progress[task] && q.userStatus.progress[task].value) || 0,
           orbs: orbsOf(q),
+          rewards: rewardInfo(q),
           enrolled: !!(q.userStatus && q.userStatus.enrolledAt),
         };
       }) });
 
   // ── 4. Zapis do questa ────────────────────────────────────────────────────
-  log('Znaleziono ' + pending.length + ' questow do zrobienia (z ' + all.length + ' widocznych)');
+  log('Znaleziono ' + selected.length + ' questow do zrobienia (z ' + all.length + ' widocznych)');
 
   // Wywolania api Discorda potrafia nie wrocic wcale (rate limit, zerwana
   // sesja). Bez limitu czasu petla stoi w milczeniu i wyglada jak zawieszona.
@@ -418,7 +464,7 @@ module.exports = `(async () => {
   };
 
   // Odstep miedzy questami trzyma nas ponizej progu limitu zapytan.
-  const queue = pending.slice();
+  const queue = selected.slice();
   const retries = {};
   let first = true;
 

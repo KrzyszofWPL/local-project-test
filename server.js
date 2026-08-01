@@ -105,6 +105,10 @@ const server = http.createServer(async (req, res) => {
           engine.setDesktopMode(body.value);
           return json(res, 200, { ok: true });
 
+        case '/api/only-orbs':
+          engine.setOnlyOrbs(body.value);
+          return json(res, 200, { ok: true });
+
         case '/api/reload-tokens':
           engine.loadTokens();
           return json(res, 200, { ok: true });
