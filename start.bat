@@ -74,10 +74,12 @@ if not exist "%LOCALAPPDATA%\ms-playwright" (
 echo Wybierz tryb:
 echo   [1] Przeglądarka (zalecane) – wykrywa WSZYSTKIE questy automatycznie
 echo   [2] API (szybszy start)     – tylko questy do których jesteś zapisany
+echo   [3] Panel kont (web)        – podglad kont: nick, e-mail, awatar, token
 echo.
-set /p MODE="Twój wybór (1/2, domyślnie 1): "
+set /p MODE="Twój wybór (1/2/3, domyślnie 1): "
 if "%MODE%"=="" set MODE=1
 if "%MODE%"=="2" goto run_api
+if "%MODE%"=="3" goto run_panel
 
 :: ── Tryb przeglądarki ──────────────────────────────────────────────────────
 :run_browser
@@ -105,6 +107,15 @@ echo.
 echo Uruchamianie index.js | kont: %TOKEN_COUNT% (sekwencyjnie)
 echo ──────────────────────────────────────────────────────────────────────
 node index.js
+goto done
+
+:: ── Panel kont (web) ───────────────────────────────────────────────────────
+:run_panel
+echo.
+echo Uruchamianie panelu kont... otworzy sie w przegladarce.
+echo Aby zatrzymac panel, nacisnij Ctrl+C w tym oknie.
+echo ──────────────────────────────────────────────────────────────────────
+node panel.js
 goto done
 
 :: ── Koniec ─────────────────────────────────────────────────────────────────
