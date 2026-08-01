@@ -44,11 +44,24 @@ function parseLine(line) {
   let password = null;
   let hostPart = rest;
 
-  // user:pass@host:port – split on the last @ so passwords may contain one.
+  // Split on the last @ so passwords may contain one. Both sides are then
+  // checked, because vendors emit this either way round:
+  //   user:pass@host:port  – the usual form
+  //   host:port@user:pass  – what Webshare's list designer offers by default
   const at = rest.lastIndexOf('@');
   if (at !== -1) {
-    const creds = rest.slice(0, at);
-    hostPart = rest.slice(at + 1);
+    const left = rest.slice(0, at);
+    const right = rest.slice(at + 1);
+    const looksLikeHost = (s) => {
+      const p = s.split(':');
+      return p.length === 2 && isPort(p[1]);
+    };
+
+    let creds;
+    if (looksLikeHost(right)) { creds = left; hostPart = right; }
+    else if (looksLikeHost(left)) { creds = right; hostPart = left; }
+    else { creds = left; hostPart = right; }
+
     const sep = creds.indexOf(':');
     if (sep === -1) throw new Error('credentials must be user:pass');
     username = decodeURIComponent(creds.slice(0, sep));

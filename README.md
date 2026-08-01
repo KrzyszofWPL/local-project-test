@@ -38,6 +38,8 @@ proxy #2, and so on:
 host:port
 host:port:user:pass
 user:pass@host:port
+host:port@user:pass          (Webshare's list designer default)
+user:pass:host:port
 http://user:pass@host:port
 socks5://host:port
 ```
