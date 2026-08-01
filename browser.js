@@ -1,38 +1,45 @@
 /**
  * Discord Quest Automation – Playwright browser injection
  *
- * Uruchomienie:
- *   node browser.js                        (domyślnie 5 równoległych kont)
- *   set CONCURRENCY=20 && node browser.js  (Windows – 20 równoległych)
+ * Command line runner. The control panel (npm start) is the friendlier way
+ * to use this project; this file does the same job without a UI.
+ *
+ * Usage:
+ *   node browser.js                        (5 accounts in parallel)
+ *   set CONCURRENCY=20 && node browser.js  (Windows – 20 in parallel)
  *   CONCURRENCY=20 node browser.js         (Linux/Mac)
  *
- * Wskazówki dotyczące równoległości (CONCURRENCY):
- *   Każdy otwarty kontekst Discord zużywa ~200-400 MB RAM.
- *   CONCURRENCY=5   →  ~1-2 GB RAM   (bezpieczne na każdym PC)
+ * Picking CONCURRENCY:
+ *   Every open Discord context uses ~200-400 MB of RAM.
+ *   CONCURRENCY=5   →  ~1-2 GB RAM   (safe on any PC)
  *   CONCURRENCY=10  →  ~2-4 GB RAM
  *   CONCURRENCY=20  →  ~4-8 GB RAM
- *   CONCURRENCY=50  →  ~10-20 GB RAM (tylko jeśli masz dużo RAMu i szybki CPU)
+ *   CONCURRENCY=50  →  ~10-20 GB RAM (only with lots of RAM and a fast CPU)
  *
- * Czas ukończenia questów:
- *   Questy WATCH_VIDEO          → kilkanaście sekund (fałszujemy timestamp)
- *   Questy PLAY_ON_DESKTOP itp. → ~15+ minut (wymagają heartbeatów co 20s)
+ * Proxies:
+ *   Put one proxy per line in ip.txt and account #1 leaves through proxy #1,
+ *   account #2 through proxy #2, and so on – see proxies.js for the accepted
+ *   formats. Without ip.txt every account uses your own IP.
+ *
+ * How long a quest takes:
+ *   WATCH_VIDEO quests          → seconds (the timestamp is faked)
+ *   PLAY_ON_DESKTOP quests etc. → ~15+ minutes (heartbeats every 20s)
  */
 
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
 
+const { loadProxies } = require('./proxies.js');
+
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || '5', 10);
+const USE_PROXIES = process.env.USE_PROXIES !== 'false';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Skrypt wstrzykiwany do strony Discord (uruchamia się wewnątrz przeglądarki).
-// Ma dostęp do webpack i QuestsStore – tak jak skrypty aamiaa/Ghraven.
-// ─────────────────────────────────────────────────────────────────────────────
-// ─────────────────────────────────────────────────────────────────────────────
-// Skrypt wstrzykiwany do strony Discord. Wzorowany na skrypcie aamiaa –
-// używa prawdziwych store'ów Discorda i FluxDispatchera zamiast surowych
-// heartbeatów, dzięki czemu klient sam raportuje postęp do backendu.
+// Script injected into the Discord page (runs inside the browser). Modelled on
+// aamiaa's script: it drives Discord's own stores and FluxDispatcher instead of
+// sending raw heartbeats, so the client itself reports progress to the backend.
 // ─────────────────────────────────────────────────────────────────────────────
 const INJECT_SCRIPT = /* javascript */ `(async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -49,7 +56,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
     wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
     webpackChunkdiscord_app.pop();
   } catch(e) { return { fatal: 'wpRequire: ' + e.message }; }
-  if (!wpRequire?.c) return { fatal: 'wpRequire.c brak' };
+  if (!wpRequire?.c) return { fatal: 'wpRequire.c missing' };
 
   const mods = Object.values(wpRequire.c);
   const findExport = (pred, key) => {
@@ -57,9 +64,9 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
     return m ? m.exports[key] : null;
   };
 
-  // ── 2. Store'y Discorda ───────────────────────────────────────────────────
+  // ── 2. Discord stores ─────────────────────────────────────────────────────
   const QuestsStore = findExport(x => x?.exports?.A?.__proto__?.getQuest, 'A');
-  if (!QuestsStore) return { fatal: 'QuestsStore nie znaleziono' };
+  if (!QuestsStore) return { fatal: 'QuestsStore not found' };
 
   const RunningGameStore = findExport(x => x?.exports?.Ay?.getRunningGames, 'Ay');
   const ApplicationStreamingStore = findExport(x => x?.exports?.A?.__proto__?.getStreamerActiveStreamMetadata, 'A');
@@ -68,11 +75,11 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
   const FluxDispatcher = findExport(x => x?.exports?.h?.__proto__?.flushWaitQueue, 'h');
   const api = findExport(x => x?.exports?.Bo?.get, 'Bo');
 
-  if (!api) return { fatal: 'moduł api nie znaleziony' };
+  if (!api) return { fatal: 'api module not found' };
   log('Store: quests=' + !!QuestsStore + ' games=' + !!RunningGameStore +
       ' flux=' + !!FluxDispatcher + ' api=' + !!api);
 
-  // Udawaj aplikację desktopową – odblokowuje questy PLAY/STREAM
+  // Pretend to be the desktop app – unlocks PLAY/STREAM quests
   const isApp = typeof DiscordNative !== 'undefined';
   if (!isApp) {
     try {
@@ -83,9 +90,9 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
     } catch(_) {}
   }
 
-  // ── 3. Poczekaj na questy ─────────────────────────────────────────────────
+  // ── 3. Wait for the quest list ────────────────────────────────────────────
   for (let i = 0; i < 30 && QuestsStore.quests.size === 0; i++) await sleep(1000);
-  log('QuestsStore: ' + QuestsStore.quests.size + ' questów ogółem');
+  log('QuestsStore: ' + QuestsStore.quests.size + ' quests in total');
 
   const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
 
@@ -96,9 +103,9 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
         && tc?.tasks
         && SUPPORTED.some(t => t in tc.tasks);
   });
-  log('Aktywnych do ukończenia: ' + pending.length);
+  log('Active and unfinished: ' + pending.length);
 
-  // ── 4. Zapis do questa – Discord oczekuje numerycznego location ───────────
+  // ── 4. Enroll – Discord expects a numeric location ────────────────────────
   const enroll = async (quest) => {
     const locations = [11, 10, 8, 4, 2, 1, 0];
     let lastErr = null;
@@ -110,7 +117,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
         lastErr = e?.body?.message ?? e?.message ?? ('HTTP ' + e?.status);
       }
     }
-    // Ostatnia próba: bez ciała żądania
+    // Last resort: no request body at all
     try {
       await api.post({ url: '/quests/' + quest.id + '/enroll', body: {} });
       return { ok: true, loc: 'empty' };
@@ -119,7 +126,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
     }
   };
 
-  // ── 5. Ukończ pojedynczy quest ────────────────────────────────────────────
+  // ── 5. Complete a single quest ────────────────────────────────────────────
   const results = [];
 
   const doQuest = async (quest) => {
@@ -131,15 +138,15 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
     const applicationId = quest.config?.application?.id ?? taskData.applications?.[0]?.id;
     let secondsDone = quest.userStatus?.progress?.[taskName]?.value ?? 0;
 
-    // Zapis jeśli jeszcze niezapisany
+    // Enroll first if this account is not enrolled yet
     if (!quest.userStatus?.enrolledAt) {
       const e = await enroll(quest);
       if (!e.ok) { results.push({ name, taskName, error: 'enroll: ' + e.err }); return; }
-      log('Zapisano: ' + name + ' (location=' + e.loc + ')');
+      log('Enrolled: ' + name + ' (location=' + e.loc + ')');
       await sleep(500);
     }
 
-    // ── WATCH_VIDEO: fałszujemy timestamp, ~7x szybciej niż realny czas ─────
+    // ── WATCH_VIDEO: fake the timestamp, ~7x faster than real time ─────────
     if (taskName === 'WATCH_VIDEO' || taskName === 'WATCH_VIDEO_ON_MOBILE') {
       const speed = 7;
       let completed = false;
@@ -162,7 +169,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
       return;
     }
 
-    // ── PLAY_ACTIVITY: heartbeat z kluczem kanału głosowego ────────────────
+    // ── PLAY_ACTIVITY: heartbeat carrying a voice channel key ──────────────
     if (taskName === 'PLAY_ACTIVITY') {
       let channelId = null;
       try {
@@ -173,7 +180,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
           channelId = g?.VOCAL?.[0]?.channel?.id;
         }
       } catch(_) {}
-      if (!channelId) { results.push({ name, taskName, error: 'brak kanału głosowego' }); return; }
+      if (!channelId) { results.push({ name, taskName, error: 'no voice channel available' }); return; }
 
       const streamKey = 'call:' + channelId + ':1';
       while (true) {
@@ -196,10 +203,10 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
       return;
     }
 
-    // ── PLAY_ON_DESKTOP: podszywamy się pod uruchomioną grę ────────────────
+    // ── PLAY_ON_DESKTOP: impersonate a running game ────────────────────────
     if (taskName === 'PLAY_ON_DESKTOP') {
       if (!RunningGameStore || !FluxDispatcher) {
-        results.push({ name, taskName, error: 'brak RunningGameStore/FluxDispatcher' }); return;
+        results.push({ name, taskName, error: 'RunningGameStore/FluxDispatcher missing' }); return;
       }
       const pid = Math.floor(Math.random() * 30000) + 1000;
       const res = await api.get({ url: '/applications/public?application_ids=' + applicationId });
@@ -243,7 +250,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
           }
         };
         FluxDispatcher.subscribe('QUESTS_SEND_HEARTBEAT_SUCCESS', fn);
-        // Jeśli klient nie wysyła heartbeatów (przeglądarka), przerwij po 3 min
+        // If the client sends no heartbeats (browser), give up after 3 min
         const watchdog = setInterval(() => {
           stalled += 30;
           if (lastProgress === secondsDone && stalled >= 180) {
@@ -256,18 +263,18 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
 
       restore();
       if (ok) results.push({ name, taskName, completed: true, done: secondsNeeded, target: secondsNeeded });
-      else results.push({ name, taskName, error: 'brak postępu – przeglądarka nie wysyła heartbeatów dla PLAY_ON_DESKTOP' });
+      else results.push({ name, taskName, error: 'no progress – the browser does not send PLAY_ON_DESKTOP heartbeats' });
       return;
     }
 
-    // ── STREAM_ON_DESKTOP: wymaga aktywnego streamu na kanale głosowym ─────
+    // ── STREAM_ON_DESKTOP: needs a live stream in a voice channel ──────────
     if (taskName === 'STREAM_ON_DESKTOP') {
-      results.push({ name, taskName, error: 'pominięto – wymaga streamu na kanale głosowym z inną osobą' });
+      results.push({ name, taskName, error: 'skipped – needs a stream in a voice channel with someone else' });
       return;
     }
   };
 
-  // ── 6. Wykonaj sekwencyjnie ───────────────────────────────────────────────
+  // ── 6. Run them one after another ─────────────────────────────────────────
   for (const quest of pending) {
     try { await doQuest(quest); }
     catch(e) {
@@ -280,7 +287,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
 })()`;
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Prosta pula współbieżności (bez zewnętrznych zależności)
+// Minimal concurrency pool (no external dependencies)
 // ─────────────────────────────────────────────────────────────────────────────
 async function runPool(items, limit, fn) {
   const results = new Array(items.length);
@@ -296,36 +303,55 @@ async function runPool(items, limit, fn) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Obsługa jednego konta Discord
+// One Discord account
 // ─────────────────────────────────────────────────────────────────────────────
-async function processToken(browser, token, index, total) {
+async function processToken(browser, token, index, total, proxy) {
   const tag = `[${String(index + 1).padStart(2)}/${total}] ${token.substring(0, 12)}...`;
   const log = (...a) => console.log(tag, ...a);
 
-  log('→ otwieranie kontekstu');
+  log('→ opening context' + (proxy ? ' via ' + proxy.label : ''));
   const context = await browser.newContext({
     userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36',
     locale: 'pl-PL',
     timezoneId: 'Europe/Warsaw',
     viewport: { width: 1280, height: 800 },
+    // Each account leaves through its own IP, which is what keeps Discord
+    // from rate limiting (429) the whole batch at once.
+    proxy: proxy ? {
+      server: proxy.server,
+      username: proxy.username ?? undefined,
+      password: proxy.password ?? undefined,
+    } : undefined,
   });
 
-  // Wycisz dialogi (np. powiadomienia Discorda)
+  // Silence dialogs (Discord notification prompts and friends)
   const page = await context.newPage();
   page.on('dialog', d => d.dismiss().catch(() => {}));
 
   try {
-    // Questy PLAY_ACTIVITY trwają kilkanaście minut – zdejmij domyślne limity
+    // PLAY_ACTIVITY quests take many minutes – drop the default timeouts
     page.setDefaultTimeout(0);
 
-    // Krok 1: Wejdź na stronę logowania – ustawiamy właściwą domenę dla localStorage
+    // A dead proxy should look like a dead proxy, not like a bad token.
+    if (proxy) {
+      try {
+        const res = await context.request.get('https://api.ipify.org?format=json',
+          { timeout: 20000 });
+        log('→ exit IP ' + (await res.json()).ip);
+      } catch (e) {
+        log('✗ proxy ' + proxy.label + ' is not reachable:', e.message.split('\n')[0]);
+        return;
+      }
+    }
+
+    // Step 1: open the login page – this gives localStorage the right origin
     await page.goto('https://discord.com/login', {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    // Krok 2: Wstrzyknij token do localStorage
-    // Discord usuwa window.localStorage – odzyskujemy go przez iframe
+    // Step 2: write the token into localStorage.
+    // Discord deletes window.localStorage – we get it back through an iframe.
     await page.evaluate(tk => {
       let ls = window.localStorage;
       if (!ls) {
@@ -336,50 +362,50 @@ async function processToken(browser, token, index, total) {
       ls.setItem('token', JSON.stringify(tk));
     }, token.trim());
 
-    log('→ token wstrzyknięty, ładowanie Discord...');
+    log('→ token injected, loading Discord…');
 
-    // Krok 3: Przejdź do aplikacji – Discord odczyta token i zaloguje się
+    // Step 3: go to the app – Discord reads the token and logs in
     await page.goto('https://discord.com/channels/@me', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
 
-    // Krok 4: Czekaj na załadowanie webpacka
+    // Step 4: wait for webpack
     await page.waitForFunction(() => !!window.webpackChunkdiscord_app, {
       timeout: 60000
     });
 
-    // Krok 5: Poczekaj na załadowanie danych sesji + QuestsStore (~10-15s)
+    // Step 5: wait for the session data + QuestsStore (~10-15s)
     await page.waitForTimeout(12000);
 
-    log('→ Discord załadowany, uruchamianie skryptu questów...');
+    log('→ Discord loaded, running the quest script…');
 
-    // Krok 6: Wstrzyknij skrypt i odbierz wyniki
+    // Step 6: inject the script and collect the results
     const result = await page.evaluate(INJECT_SCRIPT);
 
     if (!result) {
-      log('⚠ Brak odpowiedzi (prawdopodobnie przekierowanie na login – zły/wygasły token)');
+      log('⚠ No response (probably redirected to login – bad or expired token)');
       return;
     }
 
     if (result.fatal) {
-      log('✗ Błąd krytyczny:', result.fatal);
+      log('✗ Fatal error:', result.fatal);
       if (result.debug) {
-        log('  [Debug] modułów:', result.debug.modules,
-            '| store\'ów:', result.debug.storesFound);
+        log('  [Debug] modules:', result.debug.modules,
+            '| stores:', result.debug.storesFound);
         if (result.debug.questRelated?.length)
           log('  [Debug] quest-related:', result.debug.questRelated.join(', '));
         if (result.debug.sample?.length)
-          log('  [Debug] przykłady:', result.debug.sample.join(', '));
+          log('  [Debug] samples:', result.debug.sample.join(', '));
       }
       return;
     }
 
-    // Wyświetl logi wewnętrzne skryptu
+    // Print the injected script's own log
     for (const l of (result.logs ?? [])) log(' ·', l);
 
     if (!result.results?.length) {
-      log('— brak aktywnych questów');
+      log('— no active quests');
     } else {
       for (const r of result.results) {
         if (r.completed) {
@@ -392,7 +418,7 @@ async function processToken(browser, token, index, total) {
     }
 
   } catch(e) {
-    log('✗ Wyjątek:', e.message);
+    log('✗ Exception:', e.message);
   } finally {
     await context.close().catch(() => {});
   }
@@ -403,25 +429,38 @@ async function processToken(browser, token, index, total) {
 // ─────────────────────────────────────────────────────────────────────────────
 async function main() {
   if (!fs.existsSync(TOKENS_FILE)) {
-    console.error('[!] Brak pliku tokens.txt'); process.exit(1);
+    console.error('[!] tokens.txt is missing'); process.exit(1);
   }
 
   const tokens = fs.readFileSync(TOKENS_FILE, 'utf-8')
     .split('\n').map(t => t.trim()).filter(Boolean);
 
   if (!tokens.length) {
-    console.error('[!] tokens.txt jest pusty'); process.exit(1);
+    console.error('[!] tokens.txt is empty'); process.exit(1);
   }
+
+  // Account #n leaves through proxy #n; the list wraps around when there are
+  // fewer proxies than accounts.
+  const proxyList = USE_PROXIES ? loadProxies().proxies : [];
+  const proxyFor = i => proxyList.length ? proxyList[i % proxyList.length] : null;
 
   console.log('╔══════════════════════════════════════════════════╗');
   console.log('║      Discord Quest Bot  –  Playwright edition    ║');
   console.log('╚══════════════════════════════════════════════════╝');
-  console.log(`Kont do przetworzenia : ${tokens.length}`);
-  console.log(`Równoległość          : ${CONCURRENCY}`);
-  console.log(`Szacowany RAM         : ~${CONCURRENCY * 350} MB\n`);
+  console.log(`Accounts to process : ${tokens.length}`);
+  console.log(`Parallel contexts   : ${CONCURRENCY}`);
+  console.log(`Estimated RAM       : ~${CONCURRENCY * 350} MB`);
+  console.log(`Proxies (ip.txt)    : ${proxyList.length || 'none – every account uses your own IP'}`);
+  if (proxyList.length && tokens.length > proxyList.length) {
+    console.log('                      note: fewer proxies than accounts, some will share an IP');
+  }
+  console.log('');
 
   const browser = await chromium.launch({
     headless: true,
+    // Chromium only honours a per-context proxy when the browser itself was
+    // launched with one; every context overrides this placeholder.
+    proxy: proxyList.length ? { server: 'http://per-context' } : undefined,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',
@@ -439,17 +478,17 @@ async function main() {
     ]
   });
 
-  console.log('Przeglądarka uruchomiona. Procesowanie kont...\n');
+  console.log('Browser started. Processing accounts…\n');
 
   try {
     await runPool(tokens, CONCURRENCY, (token, i) =>
-      processToken(browser, token, i, tokens.length)
+      processToken(browser, token, i, tokens.length, proxyFor(i))
     );
   } finally {
     await browser.close();
   }
 
-  console.log('\n[DONE] Wszystkie konta przetworzone.');
+  console.log('\n[DONE] All accounts processed.');
 }
 
 main().catch(e => {

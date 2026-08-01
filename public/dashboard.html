@@ -43,6 +43,8 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
    of showing raw text ("settings", "bolt"…). */
 .no-icons .ms { font-size: 0 !important; width: 0; overflow: hidden; }
 .no-icons .brand-mark { width: 4px; height: 30px; }
+/* The ⋮ button has no text label, so it needs a drawn fallback of its own. */
+.no-icons .menu-btn::after { content: '\22EE'; font-size: 17px; line-height: 1; }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
 ::-webkit-scrollbar-track { background: transparent; }
@@ -62,7 +64,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   background: radial-gradient(ellipse 70% 55% at 50% 45%, rgba(10,10,10,.35) 0%, rgba(10,10,10,.86) 62%, var(--bg) 100%); }
 
 .layout { position: relative; z-index: 2; display: grid;
-  grid-template-columns: 232px minmax(0,1fr); min-height: 100vh; min-width: 1080px; }
+  grid-template-columns: 232px minmax(0,1fr); min-height: 100vh; min-width: 1280px; }
 .spacer { flex: 1; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
@@ -72,6 +74,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   background: linear-gradient(135deg, var(--accent), #FF6D00);
   color: var(--bg); font-weight: 700; font-size: 14px; }
 .avatar.sm { width: 28px; height: 28px; }
+.avatar.lg { width: 40px; height: 40px; font-size: 15px; }
 .sidebar { border-right: 1px solid var(--line-hard); background: rgba(14,14,14,.82);
   backdrop-filter: blur(14px); display: flex; flex-direction: column;
   padding: 26px 0 20px; position: sticky; top: 0; height: 100vh; }
@@ -180,7 +183,10 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 
 .table-head, .row { display: grid; grid-template-columns: 170px minmax(180px,1fr) 118px 96px;
   gap: 14px; padding: 11px 20px; }
-.table-head.wide, .row.wide { grid-template-columns: 250px minmax(160px,1fr) 90px 64px 56px 190px; }
+.table-head.wide, .row.wide {
+  grid-template-columns: minmax(200px,1.25fr) minmax(180px,1.15fr) minmax(140px,.9fr)
+                         112px 58px 52px 92px;
+  gap: 12px; }
 .table-head.quests, .row.quests { grid-template-columns: 180px minmax(160px,1fr) 88px 58px 118px 96px; }
 .table-head.skipped, .row.skipped { grid-template-columns: 180px minmax(160px,1fr) 220px; }
 .table-head { border-bottom: 1px solid var(--line-soft); font-family: var(--mono);
@@ -199,13 +205,28 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 .row-who .tk { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
   margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* Accounts view – names, e-mails and proxies are shown in full, never
+   truncated, so wrapping is the intended behaviour here. */
 .row-acc { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .row-acc .who { min-width: 0; }
-.row-acc .nm { font-size: 12.5px; color: var(--fg-dim); overflow: hidden;
-  text-overflow: ellipsis; white-space: nowrap; }
-.row-acc .em { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
-  margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row-acc .em.none { font-style: italic; color: var(--fg-rail); }
+.row-acc .nm { font-size: 13px; color: var(--fg); line-height: 1.35;
+  overflow-wrap: anywhere; }
+.row-acc .tag { font-family: var(--mono); font-size: 10px; color: var(--fg-ghost);
+  margin-top: 3px; overflow-wrap: anywhere; }
+
+.cell-email { min-width: 0; font-family: var(--mono); font-size: 11px;
+  color: var(--fg-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.cell-email.none { font-family: Roboto, sans-serif; font-style: italic;
+  font-size: 11.5px; color: var(--fg-rail); }
+.cell-email .id { display: block; font-size: 9.5px; color: var(--fg-rail); margin-top: 3px; }
+
+.cell-proxy { min-width: 0; font-family: var(--mono); font-size: 10.5px;
+  color: var(--fg-mute); line-height: 1.45; overflow-wrap: anywhere; }
+.cell-proxy .ip { display: block; font-size: 9.5px; margin-top: 3px; color: var(--fg-ghost); }
+.cell-proxy .ip.live { color: var(--accent); }
+.cell-proxy .ip.bad { color: var(--accent-hot); }
+.cell-proxy.off { font-family: Roboto, sans-serif; font-style: italic;
+  font-size: 11.5px; color: var(--fg-rail); }
 
 .row-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end;
   position: relative; }
@@ -214,9 +235,12 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   border: 1px solid #2A2A2A; background: transparent; color: var(--fg-mute); cursor: pointer; }
 .menu-btn:hover, .menu-btn.open { border-color: var(--accent); color: #fff; }
 .menu-btn .ms { font-size: 16px; }
-.menu-dropdown { position: absolute; top: 32px; right: 0; z-index: 30; min-width: 160px;
+.menu-dropdown { position: absolute; top: 32px; right: 0; z-index: 30; min-width: 186px;
   border: 1px solid var(--line); background: rgba(17,17,17,.98);
   box-shadow: 0 10px 30px rgba(0,0,0,.55); animation: qrFade .12s ease; }
+.menu-dropdown .sep { height: 1px; background: var(--line); margin: 4px 0; }
+.menu-dropdown button:disabled { opacity: .4; cursor: not-allowed; }
+.menu-dropdown button:disabled:hover { background: transparent; color: var(--fg-dim); }
 .menu-dropdown button { display: flex; align-items: center; gap: 8px; width: 100%;
   padding: 9px 12px; background: transparent; border: none; color: var(--fg-dim);
   font-size: 12px; font-family: Roboto, sans-serif; cursor: pointer; text-align: left; }
@@ -343,6 +367,29 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 .toggle .exp { font-family: var(--mono); font-size: 9.5px; color: var(--warn);
   border: 1px solid rgba(210,153,34,.35); padding: 1px 5px; margin-left: 7px; }
 
+/* ── Network / proxies ───────────────────────────────────────────────── */
+.code-block { font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
+  background: rgba(10,10,10,.6); border: 1px solid var(--line); padding: 12px 14px;
+  margin: 0 0 14px; line-height: 1.8; overflow-x: auto; }
+.link-list { margin: 0 0 14px; padding-left: 18px; font-size: 12.5px; color: var(--fg-faint);
+  line-height: 1.75; }
+.link-list li { margin-bottom: 7px; }
+.link-list b { color: var(--fg-dim); font-weight: 500; }
+.proxy-status { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.proxy-stat { flex: 1; min-width: 150px; padding: 12px 14px; border: 1px solid var(--line);
+  background: rgba(10,10,10,.35); }
+.proxy-stat .k { font-family: var(--mono); font-size: 9.5px; color: var(--fg-rail);
+  letter-spacing: .16em; }
+.proxy-stat .v { font-size: 18px; font-weight: 300; margin-top: 7px; }
+.proxy-stat .v.hot { color: var(--accent); }
+.proxy-stat .v.warn { color: var(--warn); }
+.proxy-note { width: 100%; padding: 10px 12px; font-size: 12px; line-height: 1.6; }
+.proxy-note.warn { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.35);
+  color: #E3B341; }
+.proxy-note.err { background: rgba(255,23,68,.1); border: 1px solid rgba(255,23,68,.35);
+  color: #FF8A80; }
+.proxy-note ul { margin: 7px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11px; }
+
 /* ── Toast ───────────────────────────────────────────────────────────── */
 .toast { position: fixed; right: 24px; bottom: 24px; z-index: 50;
   padding: 12px 18px; border: 1px solid var(--line); background: rgba(17,17,17,.97);
@@ -407,8 +454,8 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
       </button>
 
       <div class="actions">
-        <button class="btn btn-ghost" id="btn-reload">
-          <span class="ms">refresh</span> Reload tokens.txt
+        <button class="btn btn-ghost" id="btn-reload" title="Re-reads tokens.txt and ip.txt">
+          <span class="ms">refresh</span> Reload lists
         </button>
         <button class="btn btn-primary" id="btn-start-all">
           <span class="ms">play_arrow</span> Start all
@@ -475,7 +522,8 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             <span class="panel-meta" id="accounts-meta">0 ACCOUNTS</span>
           </div>
           <div class="table-head wide">
-            <span>ACCOUNT</span><span>STATE</span><span>PROGRESS</span><span>QUESTS</span><span>ORBS</span><span class="right">ACTIONS</span>
+            <span>ACCOUNT</span><span>E-MAIL</span><span>PROXY</span><span>STATE</span>
+            <span>QUESTS</span><span>ORBS</span><span class="right">ACTIONS</span>
           </div>
           <div id="rows-full"></div>
         </div>
@@ -564,6 +612,64 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
               </div>
             </div>
           </div>
+        </div>
+
+        <!-- ── Network / proxies ─────────────────────────────────────── -->
+        <div class="panel pad">
+          <div class="rail-label tight">NETWORK</div>
+          <p class="hint-text">Each account can leave through its own IP address, which is
+            what keeps Discord from rate limiting (<code>429</code>) the whole batch when
+            several accounts run at once. Put one proxy per line in
+            <code>ip.txt</code> next to <code>server.js</code> – account #1 uses proxy #1,
+            account #2 uses proxy #2, and so on.</p>
+
+          <div class="toggles">
+            <div class="toggle" id="tg-proxies">
+              <span class="switch"></span>
+              <div class="toggle-text">
+                <b>Route every account through its own proxy</b>
+                <span class="desc" id="proxy-desc">Reads <code>ip.txt</code> on start.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="proxy-status" id="proxy-status"></div>
+
+          <div style="display:flex;gap:10px;margin-top:14px">
+            <button class="btn btn-ghost small" id="btn-reload-proxies">
+              <span class="ms">refresh</span> Reload ip.txt
+            </button>
+          </div>
+
+          <div class="rail-label tight" style="margin-top:26px">ACCEPTED FORMATS</div>
+          <pre class="code-block">host:port
+host:port:user:pass
+user:pass@host:port
+http://user:pass@host:port
+socks5://host:port</pre>
+          <p class="hint-text">No scheme means HTTP. Chromium cannot authenticate to SOCKS
+            proxies, so use HTTP proxies whenever a login is required. Lines starting with
+            <code>#</code> are ignored.</p>
+
+          <div class="rail-label tight" style="margin-top:26px">WHERE TO GET PROXIES</div>
+          <p class="hint-text">Discord treats datacenter IP ranges with suspicion, so
+            <b>residential</b> or <b>mobile</b> proxies work far better than cheap datacenter
+            ones. Ask the vendor for <b>sticky sessions</b> – an IP that stays the same for
+            10+ minutes – because a proxy that rotates mid-quest breaks long
+            <code>PLAY_ON_DESKTOP</code> runs.</p>
+          <ul class="link-list">
+            <li><b>Residential, sticky sessions</b> – IPRoyal, Decodo (formerly Smartproxy),
+              SOAX, Bright Data, Oxylabs, NetNut, Proxy-Cheap. Sold per GB; a quest run uses
+              very little traffic, so the smallest plan usually covers a lot of accounts.</li>
+            <li><b>Cheap datacenter / ISP</b> – Webshare (10 free proxies after signing up),
+              ProxyScrape, Storm Proxies. Fine for testing that the wiring works, more likely
+              to be flagged in day-to-day use.</li>
+            <li><b>Mobile (4G/5G)</b> – the most trusted by Discord and the most expensive.
+              Worth it only for accounts you care about.</li>
+          </ul>
+          <p class="hint-text"><b>Avoid free public proxy lists.</b> Whoever runs the proxy
+            sees your traffic, and these tokens are full account access – a free list is an
+            easy way to lose every account at once.</p>
         </div>
       </section>
 
@@ -660,23 +766,41 @@ function rewardLabel(rewards) {
   return names.length ? names.join(', ') : 'cosmetic reward';
 }
 const accName = a => a.username || 'Account ' + (+a.id + 1);
+/** Display name as shown in Discord, in full. */
+const accDisplayName = a => a.globalName || a.username || 'Account ' + (+a.id + 1);
+/** @handle underneath it – falls back to the masked token when unknown. */
+const accHandle = a => a.username ? '@' + a.username : a.label;
 const isBusy = a => a.status === 'running' || a.status === 'starting';
 
-/** Discord CDN avatar, default avatar, or a colored initial as last resort. */
+/**
+ * Swaps a broken CDN image for the coloured initial, so an account without
+ * internet access to cdn.discordapp.com still shows a filled circle instead
+ * of an empty one.
+ */
+function avatarFailed(img, cls, initial) {
+  const div = document.createElement('div');
+  div.className = cls + ' avatar-fallback';
+  div.textContent = initial;
+  img.replaceWith(div);
+}
+
+/** Discord CDN avatar, default avatar, or a coloured initial as last resort. */
 function avatarMarkup(a, cls) {
   cls = cls ? 'avatar ' + cls : 'avatar';
+  const initial = esc((accDisplayName(a) || '?').charAt(0).toUpperCase());
+  const onerror = `avatarFailed(this,'${cls}','${initial}')`;
+
   if (a.discordId && a.avatar) {
     const ext = a.avatar.startsWith('a_') ? 'gif' : 'png';
-    const src = `https://cdn.discordapp.com/avatars/${a.discordId}/${a.avatar}.${ext}?size=64`;
-    return `<img class="${cls}" src="${src}" alt=""
-      onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">`;
+    const src = `https://cdn.discordapp.com/avatars/${a.discordId}/${a.avatar}.${ext}?size=80`;
+    return `<img class="${cls}" src="${src}" alt="" onerror="${onerror}">`;
   }
   if (a.discordId) {
     let idx = 0;
     try { idx = Number((BigInt(a.discordId) >> 22n) % 6n); } catch (_) {}
-    return `<img class="${cls}" src="https://cdn.discordapp.com/embed/avatars/${idx}.png" alt="">`;
+    return `<img class="${cls}" src="https://cdn.discordapp.com/embed/avatars/${idx}.png"
+      alt="" onerror="${onerror}">`;
   }
-  const initial = esc((a.username || '?').charAt(0).toUpperCase());
   return `<div class="${cls} avatar-fallback">${initial}</div>`;
 }
 
@@ -698,16 +822,57 @@ function toast(message, isErr) {
   toastTimer = setTimeout(() => { node.hidden = true; }, 3500);
 }
 
-async function copyToken(id) {
+/** Clipboard write with a fallback for pages served over plain http. */
+async function toClipboard(text) {
   try {
-    const res = await fetch('/api/token', { method: 'POST',
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (_) {}
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('clipboard blocked by the browser');
+}
+
+/** Fetches a secret (token, proxy URL) on demand and copies it. */
+async function copySecret(url, id, what) {
+  try {
+    const res = await fetch(url, { method: 'POST',
       headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || 'Request failed');
-    await navigator.clipboard.writeText(data.token);
-    toast('Token copied to clipboard');
+    await toClipboard(data.token ?? data.url ?? '');
+    toast(what + ' copied to clipboard');
   } catch (e) {
     toast('Copy failed: ' + e.message, true);
+  }
+}
+
+async function copyPlain(text, what) {
+  try {
+    if (!text) throw new Error(what.toLowerCase() + ' is not known yet');
+    await toClipboard(text);
+    toast(what + ' copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+async function testProxy(id) {
+  const acc = state && state.accounts.find(a => a.id === id);
+  toast('Testing proxy' + (acc && acc.proxy ? ' ' + acc.proxy.label : '') + '…');
+  try {
+    const res = await fetch('/api/proxy-test', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast('Proxy works – exit IP ' + data.ip);
+  } catch (e) {
+    toast('Proxy failed: ' + e.message, true);
   }
 }
 
@@ -747,6 +912,18 @@ function renderConnection() {
 }
 
 /* ── Render: stats ─────────────────────────────────────────────────────── */
+function proxyStat() {
+  const p = state.proxies || { enabled: false, count: 0 };
+  if (!p.enabled) {
+    return { l: 'PROXIES', v: 'OFF', u: '', n: 'all accounts use your IP', i: 'lan' };
+  }
+  if (!p.count) {
+    return { l: 'PROXIES', v: 0, u: 'ips', n: 'no entries in ip.txt', i: 'lan', hot: true };
+  }
+  return { l: 'PROXIES', v: p.count, u: 'ips', i: 'lan', hot: p.shared,
+    n: p.shared ? 'fewer proxies than accounts' : 'one IP per account' };
+}
+
 function renderStats() {
   const a = state.accounts;
   const active = a.filter(isBusy).length;
@@ -761,6 +938,7 @@ function renderStats() {
       i: 'stars', orb: true },
     { l: 'ERRORS', v: errors, u: 'accts', n: errors ? 'check account log' : 'no issues',
       i: 'error_outline', hot: errors > 0 },
+    proxyStat(),
   ];
   $('stats').innerHTML = cards.map(c => {
     const col = c.orb ? 'var(--orb)' : c.hot ? 'var(--accent)' : 'var(--fg)';
@@ -876,9 +1054,48 @@ function renderRows() {
   box.innerHTML = state.accounts.length
     ? state.accounts.map(accountRow).join('')
     : `<div class="empty">No accounts.<br>Add tokens to <code>tokens.txt</code>
-       (one per line) and click "Reload tokens.txt".</div>`;
+       (one per line) and click "Reload lists".</div>`;
   $('sessions-meta').textContent =
     `${state.accounts.filter(isBusy).length} / ${state.accounts.length} ACCOUNTS`;
+}
+
+/** The account's e-mail cell – shown in full, plus the Discord user id. */
+function emailCell(a) {
+  if (!a.email) {
+    return `<div class="cell-email none">Not loaded yet – start the account
+      ${a.discordId ? `<span class="id">ID ${esc(a.discordId)}</span>` : ''}</div>`;
+  }
+  return `<div class="cell-email">${esc(a.email)}
+    ${a.discordId ? `<span class="id">ID ${esc(a.discordId)}</span>` : ''}</div>`;
+}
+
+/** The proxy this account leaves through, plus its measured exit IP. */
+function proxyCell(a) {
+  if (!a.proxy) {
+    const off = state.proxies && !state.proxies.enabled;
+    return `<div class="cell-proxy off">${off ? 'Proxies off' : 'Direct connection'}</div>`;
+  }
+  let ip = '<span class="ip">exit IP unknown – use "Test proxy"</span>';
+  if (a.proxyIp) ip = `<span class="ip live">exit IP ${esc(a.proxyIp)}</span>`;
+  else if (a.proxyError) ip = `<span class="ip bad" title="${esc(a.proxyError)}">unreachable</span>`;
+  return `<div class="cell-proxy" title="${esc(a.proxy.scheme)}://${esc(a.proxy.label)}${
+    a.proxy.auth ? ' (authenticated)' : ''}">${esc(a.proxy.label)}${ip}</div>`;
+}
+
+function accountMenu(a) {
+  return `<div class="menu-dropdown">
+    <button data-act="copy-token" data-id="${a.id}">
+      <span class="ms">key</span> Copy token</button>
+    <button data-act="copy-email" data-id="${a.id}" ${a.email ? '' : 'disabled'}>
+      <span class="ms">alternate_email</span> Copy e-mail</button>
+    <button data-act="copy-id" data-id="${a.id}" ${a.discordId ? '' : 'disabled'}>
+      <span class="ms">badge</span> Copy user ID</button>
+    <div class="sep"></div>
+    <button data-act="copy-proxy" data-id="${a.id}" ${a.proxy ? '' : 'disabled'}>
+      <span class="ms">lan</span> Copy proxy</button>
+    <button data-act="test-proxy" data-id="${a.id}" ${a.proxy ? '' : 'disabled'}>
+      <span class="ms">network_check</span> Test proxy</button>
+  </div>`;
 }
 
 function renderRowsFull() {
@@ -886,36 +1103,29 @@ function renderRowsFull() {
   box.innerHTML = state.accounts.length ? state.accounts.map(a => {
     const qDone = a.quests.filter(q => q.state === 'done').length;
     const menuOpen = openMenu === a.id;
+    const busy = isBusy(a);
     return `<div class="row wide">
       <div class="row-acc">
-        ${avatarMarkup(a)}
+        ${avatarMarkup(a, 'lg')}
         <div class="who">
-          <div class="nm" title="${esc(accName(a))}">${esc(accName(a))}</div>
-          <div class="em${a.email ? '' : ' none'}" title="${esc(a.email || '')}">${
-            a.email ? esc(a.email) : 'Email not loaded yet'}</div>
+          <div class="nm">${esc(accDisplayName(a))}</div>
+          <div class="tag">${esc(accHandle(a))}</div>
         </div>
       </div>
-      <div class="row-quest"><b>${esc(a.message || '—')}</b>
-        <i>${esc(STATUS_LABEL[a.status] || a.status)}</i></div>
-      <div class="row-progress">
-        <div class="bar"><i style="width:${a.percent}%;background:${barColor(a.status)}"></i></div>
-        <small>${a.percent}% of time</small>
-      </div>
+      ${emailCell(a)}
+      ${proxyCell(a)}
+      <div><span class="badge ${a.status}">${STATUS_LABEL[a.status] || a.status}</span></div>
       <div class="num">${qDone}/${a.quests.length || '–'}</div>
       <div class="num orb">${a.orbs}</div>
       <div class="right row-actions">
-        <button class="btn btn-ghost small" data-act="start" data-id="${a.id}"
-          ${isBusy(a) ? 'disabled' : ''}>Start</button>
-        <button class="btn btn-ghost small" data-act="stop" data-id="${a.id}"
-          ${isBusy(a) ? '' : 'disabled'}>Stop</button>
+        <button class="btn btn-ghost small" data-act="${busy ? 'stop' : 'start'}"
+          data-id="${a.id}">${busy ? 'Stop' : 'Start'}</button>
         <div class="menu-wrap">
-          <button class="menu-btn${menuOpen ? ' open' : ''}" data-menu-toggle="${a.id}" title="More">
+          <button class="menu-btn${menuOpen ? ' open' : ''}" data-menu-toggle="${a.id}"
+            title="More actions">
             <span class="ms">more_vert</span>
           </button>
-          ${menuOpen ? `<div class="menu-dropdown">
-            <button data-act="copy-token" data-id="${a.id}">
-              <span class="ms">content_copy</span> Copy token</button>
-          </div>` : ''}
+          ${menuOpen ? accountMenu(a) : ''}
         </div>
       </div>
     </div>`;
@@ -1051,6 +1261,48 @@ function renderSettings() {
   $('tg-headed').classList.toggle('on', !state.headless);
   $('tg-onlyorbs').classList.toggle('on', state.onlyOrbs !== false);
   $('tg-desktop').classList.toggle('on', !!state.desktopMode);
+  renderProxySettings();
+}
+
+function renderProxySettings() {
+  const p = state.proxies || { enabled: false, count: 0, errors: [], fileExists: false };
+  const accounts = state.accounts.length;
+  const withProxy = state.accounts.filter(a => a.proxy).length;
+  const verified = new Set(state.accounts.filter(a => a.proxyIp).map(a => a.proxyIp));
+
+  $('tg-proxies').classList.toggle('on', !!p.enabled);
+  $('proxy-desc').innerHTML = p.fileExists
+    ? `<code>${esc(p.fileName)}</code> holds ${p.count} ${p.count === 1 ? 'proxy' : 'proxies'}.
+       When this is off every account uses your own IP.`
+    : `No <code>${esc(p.fileName || 'ip.txt')}</code> found yet – create it next to
+       <code>server.js</code> and hit "Reload ip.txt".`;
+
+  const cards = [
+    { k: 'PROXIES IN FILE', v: p.count, cls: p.count ? 'hot' : '' },
+    { k: 'ACCOUNTS COVERED', v: `${withProxy} / ${accounts}`,
+      cls: accounts && withProxy < accounts ? 'warn' : '' },
+    { k: 'DISTINCT EXIT IPS SEEN', v: verified.size },
+  ];
+
+  let notes = '';
+  if (p.enabled && p.shared) {
+    notes += `<div class="proxy-note warn">Fewer proxies than accounts – the list wraps
+      around, so ${accounts - p.count} account(s) share an IP with another one.
+      Add ${accounts - p.count} more line(s) to ${esc(p.fileName)} for one IP per account.</div>`;
+  }
+  if (p.enabled && p.fileExists && !p.count) {
+    notes += `<div class="proxy-note warn">${esc(p.fileName)} exists but has no usable
+      entries – every account will use your own IP.</div>`;
+  }
+  if (p.errors && p.errors.length) {
+    notes += `<div class="proxy-note err">${p.errors.length} line(s) in
+      ${esc(p.fileName)} could not be read:<ul>${p.errors.slice(0, 8).map(e =>
+        `<li>line ${e.line}: ${esc(e.error)}</li>`).join('')}</ul></div>`;
+  }
+
+  $('proxy-status').innerHTML = cards.map(c =>
+    `<div class="proxy-stat"><div class="k">${c.k}</div>
+      <div class="v ${c.cls}">${esc(c.v)}</div></div>`).join('') + notes;
 }
 
 /* ── Render root ───────────────────────────────────────────────────────── */
@@ -1088,15 +1340,28 @@ document.addEventListener('click', e => {
   }
 
   const act = e.target.closest('button[data-act]');
-  if (act) {
+  if (act && !act.disabled) {
     e.stopPropagation();
-    if (act.dataset.act === 'copy-token') {
+    const id = act.dataset.id;
+    const acc = state && state.accounts.find(a => a.id === id);
+
+    // Everything in the ⋮ menu is handled here; the menu closes either way.
+    const menuActions = {
+      'copy-token': () => copySecret('/api/token', id, 'Token'),
+      'copy-proxy': () => copySecret('/api/proxy-url', id, 'Proxy'),
+      'copy-email': () => copyPlain(acc && acc.email, 'E-mail'),
+      'copy-id':    () => copyPlain(acc && acc.discordId, 'User ID'),
+      'test-proxy': () => testProxy(id),
+    };
+    const handler = menuActions[act.dataset.act];
+    if (handler) {
       openMenu = null;
-      copyToken(act.dataset.id);
+      handler();
       renderRowsFull();
       return;
     }
-    post('/api/' + act.dataset.act, { id: act.dataset.id });
+
+    post('/api/' + act.dataset.act, { id });
     act.disabled = true;
     return;
   }
@@ -1133,6 +1398,13 @@ $('conc-input').onchange = e => post('/api/concurrency', { value: +e.target.valu
 $('tg-headed').onclick = () => post('/api/headless', { value: !state.headless });
 $('tg-onlyorbs').onclick = () => post('/api/only-orbs', { value: !(state.onlyOrbs !== false) });
 $('tg-desktop').onclick = () => post('/api/desktop-mode', { value: !state.desktopMode });
+$('tg-proxies').onclick = () =>
+  post('/api/use-proxies', { value: !(state.proxies && state.proxies.enabled) });
+$('btn-reload-proxies').onclick = async () => {
+  const res = await post('/api/reload-proxies');
+  const data = await res.json().catch(() => ({}));
+  toast(`ip.txt reloaded – ${data.count ?? 0} proxies`);
+};
 
 /* ── State stream ──────────────────────────────────────────────────────── */
 setInterval(renderConnection, 1000);

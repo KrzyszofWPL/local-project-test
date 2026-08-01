@@ -83,6 +83,22 @@ const server = http.createServer(async (req, res) => {
         case '/api/token':
           return json(res, 200, { token: engine.getToken(body.id) });
 
+        // Same deal as the token: proxy credentials stay out of the snapshot
+        // and are handed over only for an explicit copy action.
+        case '/api/proxy-url':
+          return json(res, 200, { url: engine.getProxyUrl(body.id) });
+
+        case '/api/proxy-test':
+          return json(res, 200, { ip: await engine.testProxy(body.id) });
+
+        case '/api/use-proxies':
+          engine.setUseProxies(body.value);
+          return json(res, 200, { ok: true });
+
+        case '/api/reload-proxies':
+          engine.loadProxies();
+          return json(res, 200, { ok: true, count: engine.proxyList.proxies.length });
+
         case '/api/start':
           await engine.start(body.id);
           return json(res, 200, { ok: true });
@@ -116,6 +132,7 @@ const server = http.createServer(async (req, res) => {
           return json(res, 200, { ok: true });
 
         case '/api/reload-tokens':
+          engine.loadProxies();
           engine.loadTokens();
           return json(res, 200, { ok: true });
       }
@@ -136,6 +153,12 @@ server.listen(PORT, () => {
   console.log('');
   console.log(`  Panel:     http://localhost:${PORT}`);
   console.log(`  Accounts:  ${engine.accounts.length}`);
+  console.log(`  Proxies:   ${engine.proxyList.proxies.length}`
+    + (engine.proxyList.exists ? ' (ip.txt)' : ' – no ip.txt, all accounts share this IP'));
+  if (engine.proxyList.proxies.length
+      && engine.accounts.length > engine.proxyList.proxies.length) {
+    console.log('             note: fewer proxies than accounts – some accounts share an IP');
+  }
   console.log('');
   console.log('  Close this window or press Ctrl+C to stop.');
   console.log('');

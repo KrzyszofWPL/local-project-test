@@ -10,6 +10,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
+const { loadProxies, proxyUrl, PROXY_FILE } = require('./proxies.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -54,17 +55,35 @@ function toDesktopSuperProperties(originalB64) {
   })).toString('base64');
 }
 
+/**
+ * Playwright errors carry a multi-line call log and ANSI colours – neither
+ * belongs in a toast or a log line.
+ */
+const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+
+function shortError(e) {
+  return String(e && e.message ? e.message : e)
+    .replace(ANSI, '')
+    .split('\n')[0]
+    .trim();
+}
+
 class Engine extends EventEmitter {
   constructor() {
     super();
     this.accounts = [];
-    this.browser = null;
+    // One browser process per proxy mode: Chromium only honours a
+    // per-context proxy when the browser itself was launched with one.
+    this._browsers = { plain: null, proxied: null };
     this.concurrency = parseInt(process.env.CONCURRENCY || '5', 10);
     this.headless = process.env.HEADLESS !== 'false';
     this.desktopMode = process.env.DESKTOP_MODE === 'true';
     this.onlyOrbs = process.env.ONLY_ORBS !== 'false';
+    this.useProxies = process.env.USE_PROXIES !== 'false';
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
+    this.proxyList = { file: PROXY_FILE, exists: false, proxies: [], errors: [] };
     this._loadState();
+    this.loadProxies();
     this.loadTokens();
   }
 
@@ -115,9 +134,13 @@ class Engine extends EventEmitter {
         orbs: prev.orbs ?? 0,
         logs: [],
         needsCaptcha: false,
+        proxy: null,             // filled in by _assignProxies()
+        proxyIp: prev.proxyIp ?? null,
+        proxyError: null,
         _context: null,
       };
     });
+    this._assignProxies();
     this.emit('update');
   }
 
@@ -128,6 +151,86 @@ class Engine extends EventEmitter {
     return acc.token;
   }
 
+  // ── Proxies ──────────────────────────────────────────────────────────────
+  loadProxies() {
+    this.proxyList = loadProxies();
+    this._assignProxies();
+    this.emit('update');
+  }
+
+  /**
+   * Account #n gets proxy #n. With fewer proxies than accounts the list wraps
+   * around – accounts then share an exit IP, which is exactly what the panel
+   * warns about, since avoiding that is the whole point of the feature.
+   */
+  _assignProxies() {
+    const list = this.proxyList.proxies;
+    const on = this.useProxies && list.length > 0;
+    this.accounts.forEach((acc, i) => {
+      const next = on ? list[i % list.length] : null;
+      // A different proxy means the previously measured exit IP is stale.
+      if (!acc.proxy || !next || acc.proxy.server !== next.server) {
+        acc.proxyIp = null;
+        acc.proxyError = null;
+      }
+      acc.proxy = next;
+    });
+  }
+
+  setUseProxies(v) {
+    this.useProxies = !!v;
+    this._assignProxies();
+    this._closeIdleBrowsers();
+    this.emit('update');
+  }
+
+  /** Full proxy URL (with credentials) for one account – copy action only. */
+  getProxyUrl(id) {
+    const acc = this.accounts.find(a => a.id === String(id));
+    if (!acc) throw new Error('No such account: ' + id);
+    if (!acc.proxy) throw new Error('No proxy assigned to this account');
+    return proxyUrl(acc.proxy);
+  }
+
+  /** Sends one request through the account's proxy and reports the exit IP. */
+  async testProxy(id) {
+    const acc = this.accounts.find(a => a.id === String(id));
+    if (!acc) throw new Error('No such account: ' + id);
+    if (!acc.proxy) throw new Error('No proxy assigned to this account');
+
+    let request;
+    try {
+      ({ request } = require('playwright'));
+    } catch (_) {
+      throw new Error('Playwright is not installed. Run: npm install');
+    }
+
+    const ctx = await request.newContext({
+      proxy: {
+        server: acc.proxy.server,
+        username: acc.proxy.username ?? undefined,
+        password: acc.proxy.password ?? undefined,
+      },
+      timeout: 20000,
+      ignoreHTTPSErrors: true,
+    });
+    try {
+      const res = await ctx.get('https://api.ipify.org?format=json');
+      if (!res.ok()) throw new Error('proxy answered with HTTP ' + res.status());
+      const ip = (await res.json()).ip;
+      this._push(acc, { proxyIp: ip, proxyError: null });
+      this._log(acc, `Proxy ${acc.proxy.label} works – exit IP ${ip}`);
+      return ip;
+    } catch (e) {
+      const why = shortError(e);
+      this._push(acc, { proxyIp: null, proxyError: why });
+      this._log(acc, `Proxy ${acc.proxy.label} failed: ${why}`);
+      throw new Error(why);
+    } finally {
+      try { await ctx.dispose(); } catch (_) {}
+    }
+  }
+
   // ── View for the panel (no tokens or browser handles) ──────────────────────
   snapshot() {
     return {
@@ -136,6 +239,17 @@ class Engine extends EventEmitter {
       headless: this.headless,
       desktopMode: this.desktopMode,
       onlyOrbs: this.onlyOrbs,
+      proxies: {
+        enabled: this.useProxies,
+        count: this.proxyList.proxies.length,
+        fileExists: this.proxyList.exists,
+        fileName: path.basename(this.proxyList.file),
+        errors: this.proxyList.errors,
+        // Distinct exit IPs would be ideal; distinct entries is what we can
+        // know without dialing every proxy.
+        shared: this.useProxies && this.proxyList.proxies.length > 0
+          && this.accounts.length > this.proxyList.proxies.length,
+      },
       accounts: this.accounts.map(a => {
         const target = a.quests.reduce((s, q) => s + (q.target || 0), 0);
         const done = a.quests.reduce((s, q) => s + Math.min(q.done || 0, q.target || 0), 0);
@@ -149,6 +263,10 @@ class Engine extends EventEmitter {
           email: a.email,
           status: a.status,
           message: a.message,
+          // Label only – the panel never receives proxy credentials.
+          proxy: a.proxy ? { label: a.proxy.label, scheme: a.proxy.scheme, auth: a.proxy.auth } : null,
+          proxyIp: a.proxyIp,
+          proxyError: a.proxyError,
           needsCaptcha: a.needsCaptcha,
           desktopHint: !!a.desktopHint && !this.desktopMode,
           questsDone: a.questsDone,
@@ -173,9 +291,16 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Shared browser ──────────────────────────────────────────────────────
-  async _ensureBrowser() {
-    if (this.browser && this.browser.isConnected()) return this.browser;
+  // ── Shared browsers ─────────────────────────────────────────────────────
+  /**
+   * Chromium ignores a per-context proxy unless the browser was launched with
+   * one, so proxied and direct accounts get separate browser processes. The
+   * launch-level server is a placeholder – every context overrides it.
+   */
+  async _ensureBrowser(proxied) {
+    const key = proxied ? 'proxied' : 'plain';
+    const current = this._browsers[key];
+    if (current && current.isConnected()) return current;
 
     // Import lazily – the panel should still run even before playwright is
     // installed, so it can show a readable message instead of crashing.
@@ -183,11 +308,12 @@ class Engine extends EventEmitter {
     try {
       ({ chromium } = require('playwright'));
     } catch (_) {
-      throw new Error('Playwright is not installed. Run: pnpm install');
+      throw new Error('Playwright is not installed. Run: npm install');
     }
 
-    this.browser = await chromium.launch({
+    const browser = await chromium.launch({
       headless: this.headless,
+      proxy: proxied ? { server: 'http://per-context' } : undefined,
       args: [
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-gpu', '--no-first-run', '--disable-background-networking',
@@ -197,7 +323,21 @@ class Engine extends EventEmitter {
         '--disable-renderer-backgrounding',
       ],
     });
-    return this.browser;
+    this._browsers[key] = browser;
+    return browser;
+  }
+
+  /**
+   * Settings like headless or the proxy toggle only take effect on launch, so
+   * drop idle browsers to let the next start pick the new settings up.
+   */
+  _closeIdleBrowsers() {
+    if (this.accounts.some(a => a._running || a._context)) return;
+    for (const key of Object.keys(this._browsers)) {
+      const b = this._browsers[key];
+      this._browsers[key] = null;
+      if (b) { try { b.close(); } catch (_) {} }
+    }
   }
 
   // ── Control ──────────────────────────────────────────────────────────────
@@ -242,7 +382,11 @@ class Engine extends EventEmitter {
 
   async stopAll() {
     await Promise.all(this.accounts.map(a => this.stop(a.id)));
-    if (this.browser) { try { await this.browser.close(); } catch (_) {} this.browser = null; }
+    for (const key of Object.keys(this._browsers)) {
+      const b = this._browsers[key];
+      this._browsers[key] = null;
+      if (b) { try { await b.close(); } catch (_) {} }
+    }
   }
 
   setConcurrency(n) {
@@ -252,6 +396,7 @@ class Engine extends EventEmitter {
 
   setHeadless(v) {
     this.headless = !!v;
+    this._closeIdleBrowsers();
     this.emit('update');
   }
 
@@ -280,7 +425,8 @@ class Engine extends EventEmitter {
   }
 
   async _runInner(acc) {
-    const browser = await this._ensureBrowser();
+    const proxy = acc.proxy;
+    const browser = await this._ensureBrowser(!!proxy);
 
     // Persistent profile = a CAPTCHA solved once stays solved
     const profileDir = path.join(PROFILES_DIR, acc.id);
@@ -294,38 +440,65 @@ class Engine extends EventEmitter {
       locale: 'pl-PL',
       timezoneId: 'Europe/Warsaw',
       viewport: { width: 1280, height: 800 },
+      // Every account leaves through its own IP – this is what keeps Discord
+      // from rate limiting (429) the whole batch at once.
+      proxy: proxy ? {
+        server: proxy.server,
+        username: proxy.username ?? undefined,
+        password: proxy.password ?? undefined,
+      } : undefined,
       storageState: fs.existsSync(path.join(profileDir, 'state.json'))
         ? path.join(profileDir, 'state.json')
         : undefined,
     });
     acc._context = context;
 
-    // Desktop mode: spoofs the session as the desktop client, which is a
-    // prerequisite for PLAY_ON_DESKTOP quests to accrue. Off by default
-    // because it touches the headers that fetching the quest list itself
-    // depends on.
-    if (this.desktopMode) {
-      await context.route('**/api/v*/**', async (route) => {
-        try {
-          const headers = { ...route.request().headers() };
-          const patched = toDesktopSuperProperties(headers['x-super-properties']);
-          if (patched) headers['x-super-properties'] = patched;
-          headers['user-agent'] = ELECTRON_UA;
-          await route.continue({ headers });
-        } catch (_) {
-          try { await route.continue(); } catch (_) {}
-        }
-      });
-    }
-
-    const page = await context.newPage();
-    page.setDefaultTimeout(0);
-    page.on('dialog', d => d.dismiss().catch(() => {}));
-
-    // Receive reports from the injected script
-    await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
-
     try {
+      // Confirm the exit IP before touching Discord: a dead proxy should be
+      // reported as such instead of looking like a login failure.
+      if (proxy) {
+        this._push(acc, { message: `Connecting through ${proxy.label}…` });
+        try {
+          const res = await context.request.get('https://api.ipify.org?format=json',
+            { timeout: 20000 });
+          if (!res.ok()) throw new Error('HTTP ' + res.status());
+          const ip = (await res.json()).ip;
+          this._push(acc, { proxyIp: ip, proxyError: null });
+          this._history[acc.id] = { ...(this._history[acc.id] ?? {}), proxyIp: ip };
+          this._log(acc, `Proxy ${proxy.label} – exit IP ${ip}`);
+        } catch (e) {
+          const why = shortError(e);
+          this._push(acc, { proxyIp: null, proxyError: why });
+          this._log(acc, `Proxy ${proxy.label} did not respond: ${why}`);
+          throw new Error(`Proxy ${proxy.label} is not reachable: ${why}`);
+        }
+      }
+
+      // Desktop mode: spoofs the session as the desktop client, which is a
+      // prerequisite for PLAY_ON_DESKTOP quests to accrue. Off by default
+      // because it touches the headers that fetching the quest list itself
+      // depends on.
+      if (this.desktopMode) {
+        await context.route('**/api/v*/**', async (route) => {
+          try {
+            const headers = { ...route.request().headers() };
+            const patched = toDesktopSuperProperties(headers['x-super-properties']);
+            if (patched) headers['x-super-properties'] = patched;
+            headers['user-agent'] = ELECTRON_UA;
+            await route.continue({ headers });
+          } catch (_) {
+            try { await route.continue(); } catch (_) {}
+          }
+        });
+      }
+
+      const page = await context.newPage();
+      page.setDefaultTimeout(0);
+      page.on('dialog', d => d.dismiss().catch(() => {}));
+
+      // Receive reports from the injected script
+      await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
+
       this._push(acc, { status: 'running', message: 'Logging in…' });
 
       await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
