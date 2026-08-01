@@ -1,8 +1,8 @@
 /**
- * Silnik zarządzający kontami Discord.
+ * Engine that manages Discord accounts.
  *
- * Trzyma stan każdego konta w pamięci, uruchamia/zatrzymuje je niezależnie,
- * a postęp z wstrzykniętego skryptu odbiera na żywo przez exposeFunction.
+ * Keeps each account's state in memory, starts/stops accounts independently,
+ * and receives live progress from the injected script through exposeFunction.
  */
 
 const fs = require('fs');
@@ -23,11 +23,11 @@ const ELECTRON_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
   + ' Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36';
 
 /**
- * Podmienia w nagłówku X-Super-Properties wyłącznie pola opisujące typ
- * klienta, zachowując resztę – przede wszystkim client_build_number.
+ * Replaces only the client-identity fields in the X-Super-Properties header,
+ * keeping everything else intact – most importantly client_build_number.
  *
- * Budowanie tego nagłówka od zera jest pułapką: przy nieaktualnym numerze
- * builda Discord przestaje zwracać jakiekolwiek questy.
+ * Building this header from scratch is a trap: with a stale build number
+ * Discord stops returning any quests at all.
  */
 function toDesktopSuperProperties(originalB64) {
   if (!originalB64) return null;
@@ -40,7 +40,7 @@ function toDesktopSuperProperties(originalB64) {
   if (!props || typeof props !== 'object') return null;
 
   return Buffer.from(JSON.stringify({
-    ...props,                       // client_build_number itd. zostają aktualne
+    ...props,                       // client_build_number etc. stay current
     os: 'Windows',
     browser: 'Discord Client',
     release_channel: props.release_channel ?? 'stable',
@@ -68,7 +68,7 @@ class Engine extends EventEmitter {
     this.loadTokens();
   }
 
-  // ── Trwały stan (sumy narastające między uruchomieniami) ──────────────────
+  // ── Persistent state (running totals across restarts) ──────────────────────
   _loadState() {
     try {
       const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
@@ -88,7 +88,7 @@ class Engine extends EventEmitter {
     } catch (_) {}
   }
 
-  // ── Tokeny ────────────────────────────────────────────────────────────────
+  // ── Tokens ───────────────────────────────────────────────────────────────
   loadTokens() {
     let tokens = [];
     try {
@@ -104,6 +104,10 @@ class Engine extends EventEmitter {
         token,
         label: token.substring(0, 14) + '…',
         username: prev.username ?? null,
+        globalName: prev.globalName ?? null,
+        discordId: prev.discordId ?? null,
+        avatar: prev.avatar ?? null,
+        email: prev.email ?? null,
         status: 'idle',          // idle | starting | running | done | error | stopped
         message: '',
         quests: [],              // { id, name, task, target, done, orbs, state }
@@ -117,7 +121,14 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Widok dla panelu (bez tokenów i uchwytów przeglądarki) ────────────────
+  /** Full token for a given account id – used only by the copy-token action. */
+  getToken(id) {
+    const acc = this.accounts.find(a => a.id === String(id));
+    if (!acc) throw new Error('No such account: ' + id);
+    return acc.token;
+  }
+
+  // ── View for the panel (no tokens or browser handles) ──────────────────────
   snapshot() {
     return {
       totals: this.totals,
@@ -132,6 +143,10 @@ class Engine extends EventEmitter {
           id: a.id,
           label: a.label,
           username: a.username,
+          globalName: a.globalName,
+          discordId: a.discordId,
+          avatar: a.avatar,
+          email: a.email,
           status: a.status,
           message: a.message,
           needsCaptcha: a.needsCaptcha,
@@ -158,17 +173,17 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Przeglądarka współdzielona ────────────────────────────────────────────
+  // ── Shared browser ──────────────────────────────────────────────────────
   async _ensureBrowser() {
     if (this.browser && this.browser.isConnected()) return this.browser;
 
-    // Import dopiero tutaj – panel ma działać nawet zanim playwright zostanie
-    // zainstalowany, żeby dało się zobaczyć czytelny komunikat zamiast crasha.
+    // Import lazily – the panel should still run even before playwright is
+    // installed, so it can show a readable message instead of crashing.
     let chromium;
     try {
       ({ chromium } = require('playwright'));
     } catch (_) {
-      throw new Error('Playwright nie jest zainstalowany. Uruchom: pnpm install');
+      throw new Error('Playwright is not installed. Run: pnpm install');
     }
 
     this.browser = await chromium.launch({
@@ -185,10 +200,10 @@ class Engine extends EventEmitter {
     return this.browser;
   }
 
-  // ── Sterowanie ────────────────────────────────────────────────────────────
+  // ── Control ──────────────────────────────────────────────────────────────
   async start(id) {
     const acc = this.accounts.find(a => a.id === String(id));
-    if (!acc) throw new Error('Nie ma konta ' + id);
+    if (!acc) throw new Error('No such account: ' + id);
     if (acc._running || acc.status === 'running' || acc.status === 'starting') return;
     this._push(acc, { status: 'starting', message: '', needsCaptcha: false,
                       desktopHint: false, quests: [], skipped: [] });
@@ -204,7 +219,7 @@ class Engine extends EventEmitter {
     const ctx = acc._context;
     acc._context = null;
     if (ctx) { try { await ctx.close(); } catch (_) {} }
-    this._push(acc, { status: 'stopped', message: 'Zatrzymane ręcznie' });
+    this._push(acc, { status: 'stopped', message: 'Stopped manually' });
   }
 
   async startAll() {
@@ -250,10 +265,10 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Właściwa praca dla jednego konta ──────────────────────────────────────
+  // ── Actual work for one account ─────────────────────────────────────────
   async _run(acc) {
-    // Jedyna prawdziwa blokada: status w panelu moze byc nieaktualny przez
-    // wyscig miedzy /api/start a /api/start-all, wiec pilnujemy tego tutaj.
+    // The only real guard: the panel's status can be stale due to a race
+    // between /api/start and /api/start-all, so we check again here.
     if (acc._running) return;
     acc._running = true;
 
@@ -267,14 +282,14 @@ class Engine extends EventEmitter {
   async _runInner(acc) {
     const browser = await this._ensureBrowser();
 
-    // Trwały profil = CAPTCHA rozwiązana raz zostaje rozwiązana
+    // Persistent profile = a CAPTCHA solved once stays solved
     const profileDir = path.join(PROFILES_DIR, acc.id);
     fs.mkdirSync(profileDir, { recursive: true });
 
     const context = await browser.newContext({
-      // Discord odrzuca heartbeaty questow-gier bledem 401, jesli User-Agent
-      // nie zawiera wersji Electrona. To sam naglowek decyduje, nie tylko
-      // X-Super-Properties.
+      // Discord rejects game-quest heartbeats with 401 unless the User-Agent
+      // contains an Electron version. The header itself decides this, not
+      // just X-Super-Properties.
       userAgent: this.desktopMode ? ELECTRON_UA : UA,
       locale: 'pl-PL',
       timezoneId: 'Europe/Warsaw',
@@ -285,9 +300,10 @@ class Engine extends EventEmitter {
     });
     acc._context = context;
 
-    // Tryb desktop: podszywa sesję pod klienta desktopowego, co jest warunkiem
-    // naliczania questów PLAY_ON_DESKTOP. Domyślnie wyłączony, bo ingeruje
-    // w nagłówki, od których zależy też samo pobranie listy questów.
+    // Desktop mode: spoofs the session as the desktop client, which is a
+    // prerequisite for PLAY_ON_DESKTOP quests to accrue. Off by default
+    // because it touches the headers that fetching the quest list itself
+    // depends on.
     if (this.desktopMode) {
       await context.route('**/api/v*/**', async (route) => {
         try {
@@ -306,11 +322,11 @@ class Engine extends EventEmitter {
     page.setDefaultTimeout(0);
     page.on('dialog', d => d.dismiss().catch(() => {}));
 
-    // Odbiór raportów z wstrzykniętego skryptu
+    // Receive reports from the injected script
     await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
 
     try {
-      this._push(acc, { status: 'running', message: 'Logowanie…' });
+      this._push(acc, { status: 'running', message: 'Logging in…' });
 
       await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
       await page.evaluate(tk => {
@@ -323,22 +339,22 @@ class Engine extends EventEmitter {
         ls.setItem('token', JSON.stringify(tk));
       }, acc.token.trim());
 
-      this._push(acc, { message: 'Ładowanie Discorda…' });
+      this._push(acc, { message: 'Loading Discord…' });
       await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
       await page.waitForFunction(() => !!window.webpackChunkdiscord_app);
       await page.waitForTimeout(12000);
 
-      this._push(acc, { message: 'Szukanie questów…' });
+      this._push(acc, { message: 'Looking for quests…' });
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       const result = await page.evaluate(INJECT_SCRIPT);
 
-      // Zapisz sesję, żeby kolejny start nie wymagał ponownej weryfikacji
+      // Save the session so the next start doesn't need re-verification
       try { await context.storageState({ path: path.join(profileDir, 'state.json') }); } catch (_) {}
 
       if (result?.fatal) {
         this._push(acc, { status: 'error', message: result.fatal });
       } else if (acc.status === 'running') {
-        this._push(acc, { status: 'done', message: 'Zakończone' });
+        this._push(acc, { status: 'done', message: 'Finished' });
       }
     } finally {
       if (acc._context === context) {
@@ -349,7 +365,7 @@ class Engine extends EventEmitter {
     }
   }
 
-  // ── Zdarzenia z przeglądarki ──────────────────────────────────────────────
+  // ── Events from the browser ──────────────────────────────────────────────
   _onReport(acc, ev) {
     if (!ev || typeof ev !== 'object') return;
 
@@ -359,8 +375,22 @@ class Engine extends EventEmitter {
         break;
 
       case 'user':
-        this._push(acc, { username: ev.username });
-        this._history[acc.id] = { ...(this._history[acc.id] ?? {}), username: ev.username };
+        this._push(acc, {
+          username: ev.username,
+          globalName: ev.globalName ?? null,
+          discordId: ev.id ?? null,
+          avatar: ev.avatar ?? null,
+          email: ev.email ?? null,
+        });
+        this._history[acc.id] = {
+          ...(this._history[acc.id] ?? {}),
+          username: ev.username,
+          globalName: ev.globalName ?? null,
+          discordId: ev.id ?? null,
+          avatar: ev.avatar ?? null,
+          email: ev.email ?? null,
+        };
+        this._saveState();
         break;
 
       case 'skipped':
@@ -369,7 +399,7 @@ class Engine extends EventEmitter {
         break;
 
       case 'quests':
-        // Zachowaj stan questow juz ukonczonych w tej sesji
+        // Preserve the state of quests already completed in this session
         {
           const prev = new Map(acc.quests.map(q => [q.id, q]));
           acc.quests = (ev.list ?? []).map(q => {
@@ -378,14 +408,14 @@ class Engine extends EventEmitter {
           });
         }
         this._push(acc, {
-          message: `${ev.pending} questów do zrobienia (z ${ev.total} widocznych)`,
+          message: `${ev.pending} quest(s) to do (out of ${ev.total} visible)`,
         });
         break;
 
       case 'qstart': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) Object.assign(q, { state: 'running', done: ev.done, target: ev.target });
-        this._push(acc, { message: 'W trakcie: ' + ev.name });
+        this._push(acc, { message: 'In progress: ' + ev.name });
         break;
       }
 
@@ -409,14 +439,14 @@ class Engine extends EventEmitter {
           orbs: acc.orbs,
         };
         this._saveState();
-        this._log(acc, 'Ukończono quest' + (ev.orbs ? ` (+${ev.orbs} orbs)` : ''));
+        this._log(acc, 'Quest completed' + (ev.orbs ? ` (+${ev.orbs} orbs)` : ''));
         break;
       }
 
       case 'qretry': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) { q.state = 'waiting'; q.error = ev.err; }
-        this._log(acc, 'Limit zapytań – ponowię za chwilę');
+        this._log(acc, 'Rate limited – will retry shortly');
         break;
       }
 
@@ -424,24 +454,24 @@ class Engine extends EventEmitter {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) { q.state = 'error'; q.error = ev.err; }
         if (ev.captcha) this._push(acc, { needsCaptcha: true });
-        this._log(acc, 'Błąd: ' + ev.err);
+        this._log(acc, 'Error: ' + ev.err);
 
-        // Discord odmawia naliczania questów typu gra klientowi webowemu.
-        // Tryb desktop podszywa sesję pod aplikację i jest jedyną szansą,
-        // żeby te questy w ogóle ruszyły – warto o nim przypomnieć.
+        // Discord refuses to track game-type quests for the web client.
+        // Desktop mode spoofs the session as the app and is the only way
+        // to get these quests moving at all – worth flagging it.
         const isGameTask = q && ['PLAY_ON_DESKTOP', 'STREAM_ON_DESKTOP'].includes(q.task);
         const unauthorized = /autoryz|unauthorized|401/i.test(String(ev.err));
         if (isGameTask && unauthorized && !this.desktopMode && !acc._desktopHintShown) {
           acc._desktopHintShown = true;
           this._push(acc, { desktopHint: true });
-          this._log(acc, 'Wskazówka: włącz „Tryb desktop” u góry i uruchom ponownie – '
-            + 'bez niego Discord nie nalicza questów typu gra.');
+          this._log(acc, 'Hint: enable "Desktop mode" above and restart – '
+            + 'without it Discord will not track game-type quests.');
         }
         break;
       }
 
       case 'finished':
-        this._push(acc, { status: 'done', message: 'Zakończone' });
+        this._push(acc, { status: 'done', message: 'Finished' });
         break;
     }
   }

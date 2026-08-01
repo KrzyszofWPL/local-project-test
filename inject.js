@@ -1,18 +1,18 @@
 /**
- * Skrypt wstrzykiwany do strony Discord.
+ * Script injected into the Discord page.
  *
- * Raportuje postęp na żywo przez window.__questReport (wystawiane z Node
- * przez page.exposeFunction), dzięki czemu panel widzi stan w czasie
- * rzeczywistym, a nie dopiero po zakończeniu.
+ * Reports live progress through window.__questReport (exposed from Node
+ * via page.exposeFunction), so the panel sees real-time state instead of
+ * only the final result.
  *
- * UWAGA: wewnątrz tego stringa nie wolno używać backticków ani ${...}.
+ * WARNING: this string must not contain backticks or ${...} internally.
  */
 module.exports = `(async () => {
-  // Druga warstwa ochrony przed podwojnym uruchomieniem: nawet gdyby skrypt
-  // zostal wstrzykniety dwa razy w te sama strone, druga instancja konczy sie
-  // od razu. Dwie petle na tym samym koncie zapisywalyby sie do tego samego
-  // questa i wzajemnie wywolywaly limity zapytan.
-  if (window.__questBotActive) return { fatal: 'skrypt juz dziala w tej karcie' };
+  // Second layer of protection against double injection: even if the script
+  // were injected twice into the same page, the second instance exits right
+  // away. Two loops on the same account would enroll into the same quest
+  // and trip each other's rate limits.
+  if (window.__questBotActive) return { fatal: 'script already running in this tab' };
   window.__questBotActive = true;
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -29,7 +29,7 @@ module.exports = `(async () => {
     wpRequire = webpackChunkdiscord_app.push([[Symbol()], {}, r => r]);
     webpackChunkdiscord_app.pop();
   } catch(e) { return { fatal: 'wpRequire: ' + e.message }; }
-  if (!wpRequire || !wpRequire.c) return { fatal: 'wpRequire.c brak' };
+  if (!wpRequire || !wpRequire.c) return { fatal: 'wpRequire.c missing' };
 
   const mods = Object.values(wpRequire.c);
   const findExport = (pred, key) => {
@@ -37,9 +37,9 @@ module.exports = `(async () => {
     return m ? m.exports[key] : null;
   };
 
-  // ── 2. Store'y Discorda ───────────────────────────────────────────────────
+  // ── 2. Discord stores ─────────────────────────────────────────────────────
   const QuestsStore = findExport(x => x && x.exports && x.exports.A && x.exports.A.__proto__ && x.exports.A.__proto__.getQuest, 'A');
-  if (!QuestsStore) return { fatal: 'QuestsStore nie znaleziono' };
+  if (!QuestsStore) return { fatal: 'QuestsStore not found' };
 
   const RunningGameStore = findExport(x => x && x.exports && x.exports.Ay && x.exports.Ay.getRunningGames, 'Ay');
   const ApplicationStreamingStore = findExport(x => x && x.exports && x.exports.A && x.exports.A.__proto__ && x.exports.A.__proto__.getStreamerActiveStreamMetadata, 'A');
@@ -49,15 +49,23 @@ module.exports = `(async () => {
   const api = findExport(x => x && x.exports && x.exports.Bo && x.exports.Bo.get, 'Bo');
   const UserStore = findExport(x => x && x.exports && x.exports.A && x.exports.A.__proto__ && x.exports.A.__proto__.getCurrentUser, 'A');
 
-  if (!api) return { fatal: 'modul api nie znaleziony' };
+  if (!api) return { fatal: 'api module not found' };
 
-  // Nazwa konta do panelu
+  // Account identity for the panel (username, avatar, email)
   try {
     const u = UserStore && UserStore.getCurrentUser && UserStore.getCurrentUser();
-    if (u) R({ t: 'user', username: u.username, id: u.id, discriminator: u.discriminator });
+    if (u) R({
+      t: 'user',
+      username: u.username,
+      globalName: u.globalName || u.global_name || null,
+      id: u.id,
+      discriminator: u.discriminator,
+      avatar: u.avatar || null,
+      email: u.email || null,
+    });
   } catch(_) {}
 
-  // Atrapa DiscordNative – odblokowuje sciezke PLAY/STREAM w kliencie
+  // DiscordNative stub – unlocks the PLAY/STREAM code path in the client
   if (typeof DiscordNative === 'undefined') {
     try {
       window.DiscordNative = {
@@ -69,7 +77,7 @@ module.exports = `(async () => {
     } catch(_) {}
   }
 
-  // ── 3. Poczekaj na questy ─────────────────────────────────────────────────
+  // ── 3. Wait for quests ────────────────────────────────────────────────────
   for (let i = 0; i < 30 && QuestsStore.quests.size === 0; i++) await sleep(1000);
 
   const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
@@ -85,9 +93,9 @@ module.exports = `(async () => {
     } catch(_) { return []; }
   };
 
-  // Orby maja wlasne pole ilosci. Poprzednia wersja sumowala tez zwykle
-  // 'quantity', przez co nagrody kosmetyczne (ramki, efekty profilu) liczyly
-  // sie jako orby.
+  // Orbs have their own quantity field. The previous version also summed the
+  // generic 'quantity' field, which made cosmetic rewards (avatar frames,
+  // profile effects) count as orbs.
   const orbsOf = (q) => {
     let sum = 0;
     for (const r of rewardsOf(q)) {
@@ -97,8 +105,8 @@ module.exports = `(async () => {
     return sum;
   };
 
-  // Opis nagrod do panelu i do diagnostyki - pozwala sprawdzic, czy
-  // wykrywanie orbow dziala na realnych danych.
+  // Reward description for the panel and for diagnostics – lets you verify
+  // orb detection against real data.
   const rewardInfo = (q) => rewardsOf(q).map(r => ({
     type: r.type,
     orbs: r.orbQuantity != null ? r.orbQuantity : r.orb_quantity,
@@ -114,8 +122,8 @@ module.exports = `(async () => {
         && SUPPORTED.some(t => t in tc.tasks);
   });
 
-  // Kolejnosc: wideo (sekundy) -> aktywnosc -> gra. Szybkie i pewne najpierw,
-  // zeby jeden zablokowany quest-gra nie wstrzymywal calej reszty.
+  // Order: video (seconds) -> activity -> game. Fast and reliable first, so
+  // one stuck game quest doesn't hold up the rest.
   const PRIORITY = { WATCH_VIDEO: 0, WATCH_VIDEO_ON_MOBILE: 0, PLAY_ACTIVITY: 1, PLAY_ON_DESKTOP: 2, STREAM_ON_DESKTOP: 3 };
   const taskOf = q => {
     const tc = q.config.taskConfig || q.config.taskConfigV2;
@@ -123,7 +131,7 @@ module.exports = `(async () => {
   };
   pending.sort((a, b) => (PRIORITY[taskOf(a)] ?? 9) - (PRIORITY[taskOf(b)] ?? 9));
 
-  // Pomin questy bez orbow (np. tylko ramka awatara) - jesli tak ustawiono
+  // Skip quests without orbs (e.g. avatar frame only) – if configured that way
   const skipped = [];
   let selected = pending;
   if (onlyOrbs) {
@@ -133,7 +141,7 @@ module.exports = `(async () => {
       else skipped.push(q);
     }
     if (skipped.length) {
-      log('Pominieto ' + skipped.length + ' questow bez orbow: '
+      log('Skipped ' + skipped.length + ' quest(s) without orbs: '
         + skipped.map(q => (q.config.messages && q.config.messages.questName) || q.id).join(', '));
     }
   }
@@ -166,11 +174,11 @@ module.exports = `(async () => {
         };
       }) });
 
-  // ── 4. Zapis do questa ────────────────────────────────────────────────────
-  log('Znaleziono ' + selected.length + ' questow do zrobienia (z ' + all.length + ' widocznych)');
+  // ── 4. Quest enrollment ───────────────────────────────────────────────────
+  log('Found ' + selected.length + ' quest(s) to do (out of ' + all.length + ' visible)');
 
-  // Wywolania api Discorda potrafia nie wrocic wcale (rate limit, zerwana
-  // sesja). Bez limitu czasu petla stoi w milczeniu i wyglada jak zawieszona.
+  // Discord API calls can simply never return (rate limit, dropped session).
+  // Without a timeout the loop sits silently and looks stuck.
   const withTimeout = (p, ms, label) => Promise.race([
     p,
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
@@ -178,9 +186,10 @@ module.exports = `(async () => {
 
   const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
 
-  // Limit zapytan to prosba o zwolnienie, a nie odmowa. Rozroznienie jest
-  // kluczowe: potraktowanie go jak bledu i ponowienie innym zadaniem tylko
-  // poglebia limit.
+  // A rate limit is a request to slow down, not a refusal. The distinction
+  // matters: treating it like an error and retrying with a different task
+  // only makes the limit worse. The Polish fragment below matches Discord's
+  // own rate-limit message, since the session locale is pl-PL.
   const isRateLimit = (e) => {
     if (!e) return false;
     if (e.status === 429) return true;
@@ -192,8 +201,8 @@ module.exports = `(async () => {
     return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
   };
 
-  // Kazde wywolanie API przechodzi tedy: limit czasu + cierpliwe czekanie
-  // na wygasniecie limitu zapytan.
+  // Every API call goes through: a timeout, plus patient waiting out of any
+  // rate limit.
   const apiCall = async (method, url, body, label) => {
     let lastErr = null;
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -204,7 +213,7 @@ module.exports = `(async () => {
         lastErr = e;
         if (isRateLimit(e) && attempt < 4) {
           const wait = retryAfterMs(e);
-          log('limit zapytan (' + label + ') - czekam ' + Math.round(wait/1000) + 's');
+          log('rate limited (' + label + ') - waiting ' + Math.round(wait/1000) + 's');
           await sleep(wait);
           continue;
         }
@@ -214,9 +223,9 @@ module.exports = `(async () => {
     throw lastErr;
   };
 
-  // Wartosc 'location', ktora zadziala raz, dziala dla kolejnych questow.
-  // Bez zapamietania probujemy 7 wariantow na kazdy quest, co szybko konczy
-  // sie limitem zapytan i dlugim czekaniem w module api Discorda.
+  // A 'location' value that works once will work for later quests too.
+  // Without caching it we'd try 7 variants per quest, which quickly trips
+  // the rate limit and causes long waits inside Discord's api module.
   let knownLoc = null;
 
   const enroll = async (quest) => {
@@ -235,8 +244,8 @@ module.exports = `(async () => {
         const msg = errMsg(e);
         lastErr = msg;
 
-        // Limit zapytan mimo ponowien - kolejne wartosci location nic nie dadza,
-        // bo problem nie lezy w wartosci. Przerwij i pozwol ponowic pozniej.
+        // Rate limited despite retries – trying more location values won't
+        // help, since the value isn't the problem. Bail out and retry later.
         if (isRateLimit(e)) {
           return { ok: false, err: msg, rateLimited: true };
         }
@@ -255,7 +264,7 @@ module.exports = `(async () => {
     }
   };
 
-  // ── 5. Pojedynczy quest ───────────────────────────────────────────────────
+  // ── 5. Single quest ───────────────────────────────────────────────────────
   const doQuest = async (quest) => {
     const name = (quest.config.messages && quest.config.messages.questName) || quest.id;
     const tc = quest.config.taskConfig || quest.config.taskConfigV2;
@@ -271,18 +280,18 @@ module.exports = `(async () => {
     log('Start: ' + name + ' [' + taskName + '] ' + secondsDone + '/' + secondsNeeded + 's');
 
     if (!(quest.userStatus && quest.userStatus.enrolledAt)) {
-      log('Zapisywanie do questa...');
+      log('Enrolling in quest...');
       const e = await enroll(quest);
       if (!e.ok) {
         if (e.rateLimited) {
-          // Do ponowienia pozniej - nie oznaczaj jako trwale nieudany
+          // Retry later - do not mark as permanently failed
           R({ t: 'qretry', id: quest.id, err: e.err });
           return { retry: true };
         }
         R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: !!e.captcha });
         return;
       }
-      log('Zapisano: ' + name + ' (location=' + e.loc + ')');
+      log('Enrolled: ' + name + ' (location=' + e.loc + ')');
       await sleep(500);
     }
 
@@ -301,7 +310,7 @@ module.exports = `(async () => {
             { timestamp: Math.min(secondsNeeded, timestamp + Math.random()) }, 'video-progress');
         } catch(e) {
           const msg = errMsg(e);
-          log('video-progress nie powiodlo sie po ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
+          log('video-progress failed after ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
           R({ t: 'qerr', id: quest.id, err: 'video-progress: ' + msg });
           return;
         }
@@ -333,7 +342,7 @@ module.exports = `(async () => {
           channelId = g && g.VOCAL[0] && g.VOCAL[0].channel && g.VOCAL[0].channel.id;
         }
       } catch(_) {}
-      if (!channelId) { R({ t: 'qerr', id: quest.id, err: 'brak kanalu glosowego' }); return; }
+      if (!channelId) { R({ t: 'qerr', id: quest.id, err: 'no voice channel available' }); return; }
 
       const streamKey = 'call:' + channelId + ':1';
       let stalledA = 0;
@@ -365,19 +374,19 @@ module.exports = `(async () => {
           break;
         }
 
-        if (stalledA >= 120) { errA = 'backend nie nalicza postepu (0s przez 2 min)'; break; }
+        if (stalledA >= 120) { errA = 'backend is not tracking progress (0s for 2 min)'; break; }
         await sleep(20000);
       }
 
       if (okA) R({ t: 'qdone', id: quest.id, orbs: orbs });
-      else R({ t: 'qerr', id: quest.id, err: errA || 'nieznany blad' });
+      else R({ t: 'qerr', id: quest.id, err: errA || 'unknown error' });
       return;
     }
 
     // ── PLAY_ON_DESKTOP ─────────────────────────────────────────────────────
     if (taskName === 'PLAY_ON_DESKTOP') {
       if (!RunningGameStore || !FluxDispatcher) {
-        R({ t: 'qerr', id: quest.id, err: 'brak RunningGameStore/FluxDispatcher' }); return;
+        R({ t: 'qerr', id: quest.id, err: 'RunningGameStore/FluxDispatcher not found' }); return;
       }
       const pid = Math.floor(Math.random() * 30000) + 1000;
       const res = await apiCall('GET', '/applications/public?application_ids=' + applicationId, null, 'applications');
@@ -406,9 +415,9 @@ module.exports = `(async () => {
         try { FluxDispatcher.dispatch({ type: 'RUNNING_GAMES_CHANGE', removed: [fakeGame], added: [], games: [] }); } catch(_) {}
       };
 
-      // Klient webowy nie prowadzi wlasnej petli heartbeatow dla gier,
-      // wiec wysylamy je sami - tak jak robi to klient desktopowy.
-      log('Udaje gre: ' + appData.name);
+      // The web client doesn't run its own heartbeat loop for games, so we
+      // send them ourselves - just like the desktop client does.
+      log('Impersonating game: ' + appData.name);
 
       let stalled = 0;
       let ok = false;
@@ -441,9 +450,9 @@ module.exports = `(async () => {
           break;
         }
 
-        // Backend nie nalicza postepu - dalsze czekanie nic nie da
+        // Backend isn't tracking progress – further waiting won't help
         if (stalled >= 120) {
-          failErr = 'backend nie nalicza postepu dla klienta webowego (0s przez 2 min)';
+          failErr = 'backend is not tracking progress for the web client (0s for 2 min)';
           break;
         }
 
@@ -452,18 +461,18 @@ module.exports = `(async () => {
 
       restore();
       if (ok) R({ t: 'qdone', id: quest.id, orbs: orbs });
-      else R({ t: 'qerr', id: quest.id, err: failErr || 'nieznany blad' });
+      else R({ t: 'qerr', id: quest.id, err: failErr || 'unknown error' });
       return;
     }
 
     // ── STREAM_ON_DESKTOP ───────────────────────────────────────────────────
     if (taskName === 'STREAM_ON_DESKTOP') {
-      R({ t: 'qerr', id: quest.id, err: 'pominieto - wymaga streamu na kanale glosowym z inna osoba' });
+      R({ t: 'qerr', id: quest.id, err: 'skipped - requires streaming in a voice channel with another person' });
       return;
     }
   };
 
-  // Odstep miedzy questami trzyma nas ponizej progu limitu zapytan.
+  // Spacing between quests keeps us below the rate-limit threshold.
   const queue = selected.slice();
   const retries = {};
   let first = true;
@@ -488,12 +497,12 @@ module.exports = `(async () => {
     if (outcome && outcome.retry) {
       retries[quest.id] = (retries[quest.id] || 0) + 1;
       if (retries[quest.id] <= 2) {
-        log('Limit zapytan - ' + ((quest.config.messages && quest.config.messages.questName) || quest.id)
-            + ' wroci do kolejki (proba ' + retries[quest.id] + '/2)');
+        log('Rate limited - ' + ((quest.config.messages && quest.config.messages.questName) || quest.id)
+            + ' will re-queue (attempt ' + retries[quest.id] + '/2)');
         await sleep(30000);
         queue.push(quest);
       } else {
-        R({ t: 'qerr', id: quest.id, err: 'limit zapytan Discorda - sprobuj ponownie za kilka minut' });
+        R({ t: 'qerr', id: quest.id, err: 'Discord rate limit - try again in a few minutes' });
       }
     }
   }

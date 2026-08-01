@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="pl">
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>QUEST//RUNNER · Panel</title>
+<title>QUEST//RUNNER · Control Panel</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23E53935'/%3E%3Cpath d='M18 4L8 18h6l-2 10 12-14h-6z' fill='%230A0A0A'/%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -39,8 +39,8 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   -webkit-font-smoothing: antialiased; font-size: 18px; }
 .ms.big { font-size: 22px; }
 .accent { color: var(--accent); }
-/* Bez Google Fonts ligatury nie zadziałają – chowamy nazwy ikon zamiast
-   pokazywać surowy tekst („settings”, „bolt”…). */
+/* Without Google Fonts the ligatures won't render – hide icon names instead
+   of showing raw text ("settings", "bolt"…). */
 .no-icons .ms { font-size: 0 !important; width: 0; overflow: hidden; }
 .no-icons .brand-mark { width: 4px; height: 30px; }
 
@@ -53,7 +53,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 @keyframes qrSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
 @keyframes qrFade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 
-/* ── Tło ─────────────────────────────────────────────────────────────── */
+/* ── Background ──────────────────────────────────────────────────────── */
 .backdrop { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
 #qr-matrix { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .42; }
 .skull { position: absolute; top: 50%; left: 58%; transform: translate(-50%,-50%);
@@ -66,6 +66,12 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 .spacer { flex: 1; }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────── */
+.avatar { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover;
+  background: #181818; border: 1px solid var(--line); display: block; }
+.avatar-fallback { display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), #FF6D00);
+  color: var(--bg); font-weight: 700; font-size: 14px; }
+.avatar.sm { width: 28px; height: 28px; }
 .sidebar { border-right: 1px solid var(--line-hard); background: rgba(14,14,14,.82);
   backdrop-filter: blur(14px); display: flex; flex-direction: column;
   padding: 26px 0 20px; position: sticky; top: 0; height: 100vh; }
@@ -145,7 +151,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   color: var(--fg-mute); font-size: 12.5px; flex: none; }
 .btn-outline:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
 
-/* ── Treść ───────────────────────────────────────────────────────────── */
+/* ── Content ─────────────────────────────────────────────────────────── */
 .content { flex: 1; padding: 30px 34px 40px; }
 .view { display: flex; flex-direction: column; gap: 26px; animation: qrFade .18s ease; }
 .view[hidden] { display: none; }
@@ -174,7 +180,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 
 .table-head, .row { display: grid; grid-template-columns: 170px minmax(180px,1fr) 118px 96px;
   gap: 14px; padding: 11px 20px; }
-.table-head.wide, .row.wide { grid-template-columns: 190px minmax(160px,1fr) 110px 74px 70px 132px; }
+.table-head.wide, .row.wide { grid-template-columns: 250px minmax(160px,1fr) 90px 64px 56px 190px; }
 .table-head.quests, .row.quests { grid-template-columns: 180px minmax(160px,1fr) 88px 58px 118px 96px; }
 .table-head.skipped, .row.skipped { grid-template-columns: 180px minmax(160px,1fr) 220px; }
 .table-head { border-bottom: 1px solid var(--line-soft); font-family: var(--mono);
@@ -192,6 +198,30 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   text-overflow: ellipsis; white-space: nowrap; }
 .row-who .tk { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
   margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.row-acc { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.row-acc .who { min-width: 0; }
+.row-acc .nm { font-size: 12.5px; color: var(--fg-dim); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.row-acc .em { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
+  margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-acc .em.none { font-style: italic; color: var(--fg-rail); }
+
+.row-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end;
+  position: relative; }
+.menu-wrap { position: relative; }
+.menu-btn { width: 28px; height: 28px; display: grid; place-items: center;
+  border: 1px solid #2A2A2A; background: transparent; color: var(--fg-mute); cursor: pointer; }
+.menu-btn:hover, .menu-btn.open { border-color: var(--accent); color: #fff; }
+.menu-btn .ms { font-size: 16px; }
+.menu-dropdown { position: absolute; top: 32px; right: 0; z-index: 30; min-width: 160px;
+  border: 1px solid var(--line); background: rgba(17,17,17,.98);
+  box-shadow: 0 10px 30px rgba(0,0,0,.55); animation: qrFade .12s ease; }
+.menu-dropdown button { display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; background: transparent; border: none; color: var(--fg-dim);
+  font-size: 12px; font-family: Roboto, sans-serif; cursor: pointer; text-align: left; }
+.menu-dropdown button:hover { background: rgba(229,57,53,.12); color: #fff; }
+.menu-dropdown button .ms { font-size: 15px; }
 .row-quest { min-width: 0; }
 .row-quest b { display: block; font-size: 13px; font-weight: 400; color: var(--fg-dim);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -253,7 +283,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 .log-line.err .g { color: var(--accent-hot); }
 .log-line.err .m { color: #FF8A80; }
 
-/* ── Typy zadań ──────────────────────────────────────────────────────── */
+/* ── Task types ──────────────────────────────────────────────────────── */
 .task-list { display: flex; flex-direction: column; gap: 11px; }
 .task { display: flex; align-items: center; gap: 11px; }
 .task .ms { font-size: 17px; }
@@ -262,7 +292,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 .task.fast .ms, .task.fast .task-eta { color: var(--accent); }
 .task.slow .ms, .task.slow .task-eta { color: var(--fg-soft); }
 
-/* ── Pasek zasobów ───────────────────────────────────────────────────── */
+/* ── Resource bar ────────────────────────────────────────────────────── */
 .memory-bar { display: flex; align-items: center; gap: 18px; padding: 18px 22px;
   border: 1px solid rgba(229,57,53,.22);
   background: linear-gradient(90deg, rgba(229,57,53,.07) 0%, rgba(26,26,26,.8) 55%);
@@ -312,6 +342,15 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   margin-top: 4px; line-height: 1.6; }
 .toggle .exp { font-family: var(--mono); font-size: 9.5px; color: var(--warn);
   border: 1px solid rgba(210,153,34,.35); padding: 1px 5px; margin-left: 7px; }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+.toast { position: fixed; right: 24px; bottom: 24px; z-index: 50;
+  padding: 12px 18px; border: 1px solid var(--line); background: rgba(17,17,17,.97);
+  color: var(--fg-dim); font-size: 12.5px; box-shadow: 0 0 30px rgba(0,0,0,.5);
+  animation: qrFade .18s ease; }
+.toast[hidden] { display: none; }
+.toast.err { border-color: rgba(255,23,68,.45); color: #FF8A80; }
+.toast.ok { border-color: rgba(229,57,53,.4); }
 </style>
 </head>
 <body>
@@ -333,22 +372,22 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
       </div>
     </div>
 
-    <div class="rail-label">OPERACJE</div>
+    <div class="rail-label">OPERATIONS</div>
     <nav class="nav" id="nav"></nav>
 
     <div class="spacer"></div>
 
     <div class="engine-box">
-      <div class="rail-label tight">SILNIK</div>
+      <div class="rail-label tight">ENGINE</div>
       <div class="engine-status">
         <span class="dot idle" id="conn-dot"></span>
-        <span id="conn-label">łączenie…</span>
+        <span id="conn-label">connecting…</span>
       </div>
-      <div class="engine-meta" id="conn-meta">konta —<br>odświeżono —</div>
+      <div class="engine-meta" id="conn-meta">accounts —<br>updated —</div>
     </div>
 
     <div class="settings-link" id="settings-link">
-      <span class="ms">settings</span><span>Ustawienia</span>
+      <span class="ms">settings</span><span>Settings</span>
     </div>
   </aside>
 
@@ -356,12 +395,12 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 
     <header class="topbar">
       <div class="titles">
-        <h1 id="view-title">Pulpit</h1>
-        <div class="subtitle" id="view-sub">tokens.txt · 0 kont · Europe/Warsaw</div>
+        <h1 id="view-title">Dashboard</h1>
+        <div class="subtitle" id="view-sub">tokens.txt · 0 accounts · Europe/Warsaw</div>
       </div>
       <div class="spacer"></div>
 
-      <button class="chip" id="chip-conc" title="Kliknij, aby zmienić równoległość">
+      <button class="chip" id="chip-conc" title="Click to change concurrency">
         <span class="ms">layers</span>
         <span class="chip-label">CONCURRENCY</span>
         <span class="chip-value" id="chip-conc-val">05</span>
@@ -369,17 +408,17 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
 
       <div class="actions">
         <button class="btn btn-ghost" id="btn-reload">
-          <span class="ms">refresh</span> Wczytaj tokens.txt
+          <span class="ms">refresh</span> Reload tokens.txt
         </button>
         <button class="btn btn-primary" id="btn-start-all">
-          <span class="ms">play_arrow</span> Uruchom wszystkie
+          <span class="ms">play_arrow</span> Start all
         </button>
       </div>
     </header>
 
     <div class="content">
 
-      <!-- ── PULPIT ──────────────────────────────────────────────────── -->
+      <!-- ── DASHBOARD ───────────────────────────────────────────────── -->
       <section class="view" data-view="dashboard">
         <section class="stats" id="stats"></section>
 
@@ -387,12 +426,12 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
           <div class="panel">
             <div class="panel-head">
               <span class="ms accent">account_tree</span>
-              <span class="panel-title">Aktywne sesje</span>
+              <span class="panel-title">Active sessions</span>
               <span class="spacer"></span>
-              <span class="panel-meta" id="sessions-meta">0 / 0 KONT</span>
+              <span class="panel-meta" id="sessions-meta">0 / 0 ACCOUNTS</span>
             </div>
             <div class="table-head">
-              <span>KONTO</span><span>QUEST</span><span>POSTĘP</span><span class="right">STATUS</span>
+              <span>ACCOUNT</span><span>QUEST</span><span>PROGRESS</span><span class="right">STATUS</span>
             </div>
             <div id="rows"></div>
           </div>
@@ -401,7 +440,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             <div class="panel log-panel">
               <div class="panel-head">
                 <span class="ms accent">terminal</span>
-                <span class="panel-title">Log na żywo</span>
+                <span class="panel-title">Live log</span>
                 <span class="spacer"></span>
                 <span class="dot idle" id="log-dot"></span>
               </div>
@@ -409,7 +448,7 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             </div>
 
             <div class="panel pad">
-              <div class="rail-label tight">TYPY ZADAŃ</div>
+              <div class="rail-label tight">TASK TYPES</div>
               <div class="task-list" id="tasks"></div>
             </div>
           </div>
@@ -422,74 +461,74 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             <div class="memory-sub" id="memory-sub">—</div>
           </div>
           <div class="meter"><div class="meter-fill" id="memory-fill"></div><div class="meter-sweep"></div></div>
-          <button class="btn btn-outline" id="btn-stop-all">Zatrzymaj wszystkie</button>
+          <button class="btn btn-outline" id="btn-stop-all">Stop all</button>
         </section>
       </section>
 
-      <!-- ── KONTA ───────────────────────────────────────────────────── -->
+      <!-- ── ACCOUNTS ────────────────────────────────────────────────── -->
       <section class="view" data-view="accounts" hidden>
         <div class="panel">
           <div class="panel-head">
             <span class="ms accent">key</span>
-            <span class="panel-title">Konta z tokens.txt</span>
+            <span class="panel-title">Accounts from tokens.txt</span>
             <span class="spacer"></span>
-            <span class="panel-meta" id="accounts-meta">0 KONT</span>
+            <span class="panel-meta" id="accounts-meta">0 ACCOUNTS</span>
           </div>
           <div class="table-head wide">
-            <span>KONTO</span><span>STAN</span><span>POSTĘP</span><span>QUESTY</span><span>ORBS</span><span class="right">AKCJE</span>
+            <span>ACCOUNT</span><span>STATE</span><span>PROGRESS</span><span>QUESTS</span><span>ORBS</span><span class="right">ACTIONS</span>
           </div>
           <div id="rows-full"></div>
         </div>
       </section>
 
-      <!-- ── QUESTY ──────────────────────────────────────────────────── -->
+      <!-- ── QUESTS ──────────────────────────────────────────────────── -->
       <section class="view" data-view="quests" hidden>
         <div class="panel">
           <div class="panel-head">
             <span class="ms accent">flag</span>
-            <span class="panel-title">Questy</span>
+            <span class="panel-title">Quests</span>
             <span class="spacer"></span>
-            <span class="panel-meta" id="quests-meta">0 AKTYWNYCH</span>
+            <span class="panel-meta" id="quests-meta">0 ACTIVE</span>
           </div>
           <div class="table-head quests">
-            <span>KONTO</span><span>QUEST</span><span>TYP</span><span>ORBS</span>
-            <span>POSTĘP</span><span class="right">STATUS</span>
+            <span>ACCOUNT</span><span>QUEST</span><span>TYPE</span><span>ORBS</span>
+            <span>PROGRESS</span><span class="right">STATUS</span>
           </div>
           <div id="quests-list"></div>
         </div>
         <div class="panel" id="skipped-panel" hidden>
           <div class="panel-head">
             <span class="ms">block</span>
-            <span class="panel-title">Pominięte – bez orbs</span>
+            <span class="panel-title">Skipped – no orbs</span>
             <span class="spacer"></span>
             <span class="panel-meta" id="skipped-meta">0</span>
           </div>
           <div class="table-head skipped">
-            <span>KONTO</span><span>QUEST</span><span>NAGRODA</span>
+            <span>ACCOUNT</span><span>QUEST</span><span>REWARD</span>
           </div>
           <div id="skipped-list"></div>
         </div>
       </section>
 
-      <!-- ── LOGI ────────────────────────────────────────────────────── -->
+      <!-- ── LOGS ────────────────────────────────────────────────────── -->
       <section class="view" data-view="logs" hidden>
         <div class="panel log-panel">
           <div class="panel-head">
             <span class="ms accent">terminal</span>
-            <span class="panel-title">Pełny log wszystkich kont</span>
+            <span class="panel-title">Full log – all accounts</span>
             <span class="spacer"></span>
-            <span class="panel-meta" id="logs-meta">0 WPISÓW</span>
+            <span class="panel-meta" id="logs-meta">0 ENTRIES</span>
           </div>
           <div class="log-body tall" id="logs-full"></div>
         </div>
       </section>
 
-      <!-- ── USTAWIENIA ──────────────────────────────────────────────── -->
+      <!-- ── SETTINGS ────────────────────────────────────────────────── -->
       <section class="view" data-view="settings" hidden>
         <div class="panel pad">
-          <div class="rail-label tight">RÓWNOLEGŁOŚĆ</div>
-          <p class="hint-text">Ile kont pracuje jednocześnie przy „Uruchom wszystkie”.
-            Każdy kontekst Chromium to ~350 MB RAM.</p>
+          <div class="rail-label tight">CONCURRENCY</div>
+          <p class="hint-text">How many accounts run at the same time with "Start all".
+            Each Chromium context uses ~350 MB RAM.</p>
           <div class="field">
             <input type="range" id="conc-range" min="1" max="50" step="1">
             <input type="number" id="conc-input" min="1" max="50">
@@ -498,30 +537,30 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
         </div>
 
         <div class="panel pad">
-          <div class="rail-label tight">TRYB PRACY</div>
+          <div class="rail-label tight">RUN MODE</div>
           <div class="toggles">
             <div class="toggle" id="tg-headed">
               <span class="switch"></span>
               <div class="toggle-text">
-                <b>Pokaż okna przeglądarki</b>
-                <span class="desc">Wyłącza tryb headless. Potrzebne, gdy trzeba ręcznie przejść
-                  weryfikację CAPTCHA – sesja zostaje zapamiętana w profilu konta.</span>
+                <b>Show browser windows</b>
+                <span class="desc">Disables headless mode. Needed when you must solve a CAPTCHA
+                  manually – the session is remembered in the account's profile.</span>
               </div>
             </div>
             <div class="toggle" id="tg-onlyorbs">
               <span class="switch"></span>
               <div class="toggle-text">
-                <b>Tylko questy z orbs</b>
-                <span class="desc">Pomija questy nagradzane wyłącznie kosmetyką
-                  (ramka awatara, efekt profilu).</span>
+                <b>Orb quests only</b>
+                <span class="desc">Skips quests that only reward cosmetics
+                  (avatar frame, profile effect).</span>
               </div>
             </div>
             <div class="toggle" id="tg-desktop">
               <span class="switch"></span>
               <div class="toggle-text">
-                <b>Tryb desktop <span class="exp">EKSPERYMENTALNY</span></b>
-                <span class="desc">Podszywa sesję pod klienta desktopowego. Wymagane dla questów
-                  typu gra, ale Discord może wtedy przestać zwracać listę questów.</span>
+                <b>Desktop mode <span class="exp">EXPERIMENTAL</span></b>
+                <span class="desc">Spoofs the session as the desktop client. Required for
+                  game-type quests, but Discord may then stop returning the quest list.</span>
               </div>
             </div>
           </div>
@@ -532,15 +571,17 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   </main>
 </div>
 
+<div class="toast" id="toast" hidden></div>
+
 <script>
-/* ── Ikony: awaryjny tryb bez Google Fonts ─────────────────────────────── */
+/* ── Icons: fallback when Google Fonts is unreachable ──────────────────── */
 if (document.fonts && document.fonts.load) {
   const degrade = () => document.documentElement.classList.add('no-icons');
   document.fonts.load("18px 'Material Symbols Rounded'", 'settings')
     .then(f => { if (!f.length) degrade(); }).catch(degrade);
 }
 
-/* ── Tło: deszcz znaków ────────────────────────────────────────────────── */
+/* ── Background: falling-character rain ─────────────────────────────────── */
 (function () {
   const c = document.getElementById('qr-matrix');
   if (!c || !c.getContext) return;
@@ -577,18 +618,18 @@ if (document.fonts && document.fonts.load) {
   draw();
 })();
 
-/* ── Stałe ─────────────────────────────────────────────────────────────── */
+/* ── Constants ─────────────────────────────────────────────────────────── */
 const NAV = [
-  { id: 'dashboard', icon: 'space_dashboard', label: 'Pulpit',     title: 'Pulpit' },
-  { id: 'accounts',  icon: 'key',             label: 'Konta',      title: 'Konta' },
-  { id: 'quests',    icon: 'flag',            label: 'Questy',     title: 'Questy' },
-  { id: 'logs',      icon: 'terminal',        label: 'Logi',       title: 'Log na żywo' },
-  { id: 'settings',  icon: 'settings',        label: 'Ustawienia', title: 'Ustawienia' },
+  { id: 'dashboard', icon: 'space_dashboard', label: 'Dashboard', title: 'Dashboard' },
+  { id: 'accounts',  icon: 'key',             label: 'Accounts',  title: 'Accounts' },
+  { id: 'quests',    icon: 'flag',            label: 'Quests',    title: 'Quests' },
+  { id: 'logs',      icon: 'terminal',        label: 'Logs',      title: 'Live log' },
+  { id: 'settings',  icon: 'settings',        label: 'Settings',  title: 'Settings' },
 ];
 
-const STATUS_PL = {
-  idle: 'IDLE', starting: 'START', running: 'RUNNING',
-  done: 'DONE', error: 'ERROR', stopped: 'STOP',
+const STATUS_LABEL = {
+  idle: 'IDLE', starting: 'STARTING', running: 'RUNNING',
+  done: 'DONE', error: 'ERROR', stopped: 'STOPPED',
 };
 const TASK_META = {
   WATCH_VIDEO:           { icon: 'movie',          eta: '~15s',   fast: true },
@@ -597,9 +638,9 @@ const TASK_META = {
   STREAM_ON_DESKTOP:     { icon: 'cast',           eta: '15 min', fast: false },
   PLAY_ACTIVITY:         { icon: 'apps',           eta: '15 min', fast: false },
 };
-const TASK_PL = {
-  WATCH_VIDEO: 'wideo', WATCH_VIDEO_ON_MOBILE: 'wideo',
-  PLAY_ON_DESKTOP: 'gra', STREAM_ON_DESKTOP: 'stream', PLAY_ACTIVITY: 'aktywność',
+const TASK_LABEL = {
+  WATCH_VIDEO: 'video', WATCH_VIDEO_ON_MOBILE: 'video',
+  PLAY_ON_DESKTOP: 'game', STREAM_ON_DESKTOP: 'stream', PLAY_ACTIVITY: 'activity',
 };
 const RAM_PER_CONTEXT = 350;
 
@@ -614,21 +655,63 @@ const post = (url, body) => fetch(url, { method: 'POST',
   headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
 
 function rewardLabel(rewards) {
-  if (!rewards || !rewards.length) return 'brak nagród';
+  if (!rewards || !rewards.length) return 'no reward';
   const names = rewards.map(r => r.name).filter(Boolean);
-  return names.length ? names.join(', ') : 'nagroda kosmetyczna';
+  return names.length ? names.join(', ') : 'cosmetic reward';
 }
-const accName = a => a.username || 'Konto ' + (+a.id + 1);
+const accName = a => a.username || 'Account ' + (+a.id + 1);
 const isBusy = a => a.status === 'running' || a.status === 'starting';
 
-/* ── Stan widoku ───────────────────────────────────────────────────────── */
+/** Discord CDN avatar, default avatar, or a colored initial as last resort. */
+function avatarMarkup(a, cls) {
+  cls = cls ? 'avatar ' + cls : 'avatar';
+  if (a.discordId && a.avatar) {
+    const ext = a.avatar.startsWith('a_') ? 'gif' : 'png';
+    const src = `https://cdn.discordapp.com/avatars/${a.discordId}/${a.avatar}.${ext}?size=64`;
+    return `<img class="${cls}" src="${src}" alt=""
+      onerror="this.src='https://cdn.discordapp.com/embed/avatars/0.png'">`;
+  }
+  if (a.discordId) {
+    let idx = 0;
+    try { idx = Number((BigInt(a.discordId) >> 22n) % 6n); } catch (_) {}
+    return `<img class="${cls}" src="https://cdn.discordapp.com/embed/avatars/${idx}.png" alt="">`;
+  }
+  const initial = esc((a.username || '?').charAt(0).toUpperCase());
+  return `<div class="${cls} avatar-fallback">${initial}</div>`;
+}
+
+/* ── View state ────────────────────────────────────────────────────────── */
 let state = null;
 let view = 'dashboard';
 const expanded = new Set();
+let openMenu = null;
 let connected = false;
 let lastUpdateAt = Date.now();
+let toastTimer = null;
 
-/* ── Render: nawigacja / nagłówek ──────────────────────────────────────── */
+function toast(message, isErr) {
+  const node = $('toast');
+  node.textContent = message;
+  node.className = 'toast' + (isErr ? ' err' : ' ok');
+  node.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { node.hidden = true; }, 3500);
+}
+
+async function copyToken(id) {
+  try {
+    const res = await fetch('/api/token', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    await navigator.clipboard.writeText(data.token);
+    toast('Token copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+/* ── Render: nav / header ─────────────────────────────────────────────── */
 function renderNav() {
   const counts = {
     accounts: state ? state.accounts.length : 0,
@@ -645,7 +728,7 @@ function renderNav() {
 function renderHeader() {
   $('view-title').textContent = NAV.find(n => n.id === view).title;
   const n = state ? state.accounts.length : 0;
-  $('view-sub').textContent = `tokens.txt · ${n} ${n === 1 ? 'konto' : 'kont'} · Europe/Warsaw`;
+  $('view-sub').textContent = `tokens.txt · ${n} ${n === 1 ? 'account' : 'accounts'} · Europe/Warsaw`;
   $('chip-conc-val').textContent = pad2(state ? state.concurrency : 5);
 
   const busy = state ? state.accounts.some(isBusy) : false;
@@ -655,28 +738,28 @@ function renderHeader() {
 
 function renderConnection() {
   $('conn-dot').className = 'dot' + (connected ? ' pulse' : ' err');
-  $('conn-label').textContent = connected ? 'SSE · POŁĄCZONO' : 'SSE · BRAK POŁĄCZENIA';
+  $('conn-label').textContent = connected ? 'SSE · CONNECTED' : 'SSE · DISCONNECTED';
   const secs = Math.round((Date.now() - lastUpdateAt) / 1000);
   const active = state ? state.accounts.filter(isBusy).length : 0;
   $('conn-meta').innerHTML =
-    `konta ${state ? state.accounts.length : '—'} · aktywne ${active}<br>` +
-    `odświeżono ${!connected ? '—' : secs < 2 ? 'teraz' : secs + 's temu'}`;
+    `accounts ${state ? state.accounts.length : '—'} · active ${active}<br>` +
+    `updated ${!connected ? '—' : secs < 2 ? 'now' : secs + 's ago'}`;
 }
 
-/* ── Render: statystyki ────────────────────────────────────────────────── */
+/* ── Render: stats ─────────────────────────────────────────────────────── */
 function renderStats() {
   const a = state.accounts;
   const active = a.filter(isBusy).length;
   const errors = a.filter(x => x.status === 'error').length;
   const cards = [
-    { l: 'WCZYTANE KONTA', v: a.length, u: 'kont', n: 'z pliku tokens.txt', i: 'key' },
-    { l: 'AKTYWNE SESJE', v: active, u: 'ctx', n: active ? 'przeglądarka pracuje' : 'bezczynne',
+    { l: 'LOADED ACCOUNTS', v: a.length, u: 'accts', n: 'from tokens.txt', i: 'key' },
+    { l: 'ACTIVE SESSIONS', v: active, u: 'ctx', n: active ? 'browser running' : 'idle',
       i: 'bolt', hot: active > 0 },
-    { l: 'UKOŃCZONE QUESTY', v: state.totals.questsCompleted, u: 'total',
-      n: 'suma na tej maszynie', i: 'task_alt' },
-    { l: 'ZDOBYTE ORBS', v: state.totals.orbsEarned, u: 'orbs', n: 'suma narastająca',
+    { l: 'QUESTS COMPLETED', v: state.totals.questsCompleted, u: 'total',
+      n: 'total on this machine', i: 'task_alt' },
+    { l: 'ORBS EARNED', v: state.totals.orbsEarned, u: 'orbs', n: 'running total',
       i: 'stars', orb: true },
-    { l: 'BŁĘDY', v: errors, u: 'kont', n: errors ? 'sprawdź log konta' : 'brak problemów',
+    { l: 'ERRORS', v: errors, u: 'accts', n: errors ? 'check account log' : 'no issues',
       i: 'error_outline', hot: errors > 0 },
   ];
   $('stats').innerHTML = cards.map(c => {
@@ -690,7 +773,7 @@ function renderStats() {
   }).join('');
 }
 
-/* ── Render: wiersze kont ──────────────────────────────────────────────── */
+/* ── Render: account rows ──────────────────────────────────────────────── */
 function statusDot(status) {
   if (status === 'running' || status === 'starting') return 'pulse';
   if (status === 'error') return 'err';
@@ -704,31 +787,31 @@ function barColor(status) {
 }
 function currentQuestLabel(a) {
   const run = a.quests.find(q => q.state === 'running');
-  if (run) return { name: run.name, task: TASK_PL[run.task] || run.task || '—' };
+  if (run) return { name: run.name, task: TASK_LABEL[run.task] || run.task || '—' };
   if (a.message) return { name: a.message, task: '—' };
-  return { name: 'Oczekuje', task: '—' };
+  return { name: 'Waiting', task: '—' };
 }
 function questProgressText(a) {
   const total = a.quests.length;
   const done = a.quests.filter(q => q.state === 'done').length;
-  return total ? done + ' / ' + total + ' questów' : '— / —';
+  return total ? done + ' / ' + total + ' quests' : '— / —';
 }
 
 function questLine(q) {
   const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
   const left = Math.max(0, (q.target || 0) - (q.done || 0));
   let right, cls = '';
-  if (q.state === 'waiting')      { right = 'czeka na limit…'; cls = ' wait'; }
-  else if (q.state === 'error')   { right = 'błąd'; cls = ' err'; }
-  else if (q.state === 'done')    { right = '100% · gotowe'; }
-  else if (q.state === 'running') { right = pct + '% · zostało ' + fmtTime(left); }
+  if (q.state === 'waiting')      { right = 'waiting on rate limit…'; cls = ' wait'; }
+  else if (q.state === 'error')   { right = 'error'; cls = ' err'; }
+  else if (q.state === 'done')    { right = '100% · done'; }
+  else if (q.state === 'running') { right = pct + '% · ' + fmtTime(left) + ' left'; }
   else                            { right = fmtTime(q.target); }
   const dot = q.state === 'running' ? 'pulse' : q.state === 'error' ? 'err'
     : q.state === 'waiting' ? 'warn' : q.state === 'done' ? 'ok' : 'idle';
   return `<div class="quest-line">
     <span class="dot ${dot}"></span>
     <span class="qn" title="${esc(q.name)}">${esc(q.name)}</span>
-    <span class="qt">${esc(TASK_PL[q.task] || q.task || '—')}</span>
+    <span class="qt">${esc(TASK_LABEL[q.task] || q.task || '—')}</span>
     <span class="qorb">${q.orbs ? '+' + q.orbs : ''}</span>
     <span class="qp${cls}"${q.error ? ' title="' + esc(q.error) + '"' : ''}>${esc(right)}</span>
   </div>`;
@@ -737,25 +820,25 @@ function questLine(q) {
 function accountDetail(a) {
   const quests = a.quests.length
     ? a.quests.map(questLine).join('')
-    : '<div class="quest-line"><span class="qp">Brak wykrytych questów</span></div>';
+    : '<div class="quest-line"><span class="qp">No quests detected</span></div>';
   const logs = a.logs.length
     ? a.logs.slice(-14).map(l => `<div class="log-line">
         <span class="t">${fmtClock(l.ts)}</span><span class="m">${esc(l.msg)}</span></div>`).join('')
-    : '<div class="log-line"><span class="m">Brak wpisów</span></div>';
+    : '<div class="log-line"><span class="m">No entries</span></div>';
 
   return `<div class="row-detail">
-    ${a.desktopHint ? `<div class="notice hint">Discord odmówił naliczania questów typu
-      <b>gra</b> temu kontu (401). Włącz <b>Tryb desktop</b> w Ustawieniach i uruchom ponownie.</div>` : ''}
-    ${a.needsCaptcha ? `<div class="notice captcha">Discord poprosił o weryfikację. Włącz
-      <b>Pokaż okna przeglądarki</b>, uruchom to konto i przejdź weryfikację ręcznie –
-      sesja zostanie zapamiętana.</div>` : ''}
+    ${a.desktopHint ? `<div class="notice hint">Discord refused to track <b>game</b>-type
+      quests for this account (401). Enable <b>Desktop mode</b> in Settings and restart.</div>` : ''}
+    ${a.needsCaptcha ? `<div class="notice captcha">Discord asked for verification. Enable
+      <b>Show browser windows</b>, run this account and complete the verification manually –
+      the session will be remembered.</div>` : ''}
     <div class="detail-grid">
       <div class="detail-col">
-        <div class="rail-label tight">QUESTY (${a.quests.length})</div>
+        <div class="rail-label tight">QUESTS (${a.quests.length})</div>
         ${quests}
       </div>
       <div class="detail-col">
-        <div class="rail-label tight">LOG KONTA</div>
+        <div class="rail-label tight">ACCOUNT LOG</div>
         <div style="font-family:var(--mono);font-size:11px;line-height:1.9">${logs}</div>
         <div style="display:flex;gap:8px;margin-top:14px">
           <button class="btn btn-ghost small" data-act="start" data-id="${a.id}"
@@ -783,7 +866,7 @@ function accountRow(a) {
         <div class="bar"><i style="width:${a.percent}%;background:${barColor(a.status)};box-shadow:0 0 9px ${barColor(a.status)}"></i></div>
         <small>${esc(questProgressText(a))}</small>
       </div>
-      <div class="right"><span class="badge ${a.status}">${STATUS_PL[a.status] || a.status}</span></div>
+      <div class="right"><span class="badge ${a.status}">${STATUS_LABEL[a.status] || a.status}</span></div>
     </div>
     ${open ? accountDetail(a) : ''}`;
 }
@@ -792,42 +875,55 @@ function renderRows() {
   const box = $('rows');
   box.innerHTML = state.accounts.length
     ? state.accounts.map(accountRow).join('')
-    : `<div class="empty">Brak kont.<br>Dodaj tokeny do <code>tokens.txt</code>
-       (jeden na linię) i kliknij „Wczytaj tokens.txt”.</div>`;
+    : `<div class="empty">No accounts.<br>Add tokens to <code>tokens.txt</code>
+       (one per line) and click "Reload tokens.txt".</div>`;
   $('sessions-meta').textContent =
-    `${state.accounts.filter(isBusy).length} / ${state.accounts.length} KONT`;
+    `${state.accounts.filter(isBusy).length} / ${state.accounts.length} ACCOUNTS`;
 }
 
 function renderRowsFull() {
   const box = $('rows-full');
   box.innerHTML = state.accounts.length ? state.accounts.map(a => {
     const qDone = a.quests.filter(q => q.state === 'done').length;
+    const menuOpen = openMenu === a.id;
     return `<div class="row wide">
-      <div class="row-who">
-        <span class="dot ${statusDot(a.status)}"></span>
-        <div class="who"><div class="nm">${esc(accName(a))}</div>
-          <div class="tk">${esc(a.label)}</div></div>
+      <div class="row-acc">
+        ${avatarMarkup(a)}
+        <div class="who">
+          <div class="nm" title="${esc(accName(a))}">${esc(accName(a))}</div>
+          <div class="em${a.email ? '' : ' none'}" title="${esc(a.email || '')}">${
+            a.email ? esc(a.email) : 'Email not loaded yet'}</div>
+        </div>
       </div>
       <div class="row-quest"><b>${esc(a.message || '—')}</b>
-        <i>${esc(STATUS_PL[a.status] || a.status)}</i></div>
+        <i>${esc(STATUS_LABEL[a.status] || a.status)}</i></div>
       <div class="row-progress">
         <div class="bar"><i style="width:${a.percent}%;background:${barColor(a.status)}"></i></div>
-        <small>${a.percent}% czasu</small>
+        <small>${a.percent}% of time</small>
       </div>
       <div class="num">${qDone}/${a.quests.length || '–'}</div>
       <div class="num orb">${a.orbs}</div>
-      <div class="right" style="display:flex;gap:6px;justify-content:flex-end">
+      <div class="right row-actions">
         <button class="btn btn-ghost small" data-act="start" data-id="${a.id}"
           ${isBusy(a) ? 'disabled' : ''}>Start</button>
         <button class="btn btn-ghost small" data-act="stop" data-id="${a.id}"
           ${isBusy(a) ? '' : 'disabled'}>Stop</button>
+        <div class="menu-wrap">
+          <button class="menu-btn${menuOpen ? ' open' : ''}" data-menu-toggle="${a.id}" title="More">
+            <span class="ms">more_vert</span>
+          </button>
+          ${menuOpen ? `<div class="menu-dropdown">
+            <button data-act="copy-token" data-id="${a.id}">
+              <span class="ms">content_copy</span> Copy token</button>
+          </div>` : ''}
+        </div>
       </div>
     </div>`;
-  }).join('') : `<div class="empty">Brak kont w <code>tokens.txt</code>.</div>`;
-  $('accounts-meta').textContent = `${state.accounts.length} KONT`;
+  }).join('') : `<div class="empty">No accounts in <code>tokens.txt</code>.</div>`;
+  $('accounts-meta').textContent = `${state.accounts.length} ACCOUNTS`;
 }
 
-/* ── Render: questy ────────────────────────────────────────────────────── */
+/* ── Render: quests ────────────────────────────────────────────────────── */
 function renderQuests() {
   const rows = [];
   let running = 0;
@@ -839,17 +935,17 @@ function renderQuests() {
         : q.state === 'running' ? 'running' : q.state === 'waiting' ? 'waiting' : 'idle';
       const qDot = q.state === 'running' ? 'pulse' : q.state === 'error' ? 'err'
         : q.state === 'waiting' ? 'warn' : q.state === 'done' ? 'ok' : 'idle';
-      const note = q.state === 'waiting' ? 'czeka na limit…'
-        : q.state === 'error' ? (q.error || 'błąd')
-        : q.state === 'running' ? 'zostało ' + fmtTime(Math.max(0, (q.target || 0) - (q.done || 0)))
-        : q.state === 'done' ? 'gotowe' : 'oczekuje';
+      const note = q.state === 'waiting' ? 'waiting on rate limit…'
+        : q.state === 'error' ? (q.error || 'error')
+        : q.state === 'running' ? fmtTime(Math.max(0, (q.target || 0) - (q.done || 0))) + ' left'
+        : q.state === 'done' ? 'done' : 'pending';
       rows.push(`<div class="row quests">
         <div class="row-who"><span class="dot ${qDot}"></span>
           <div class="who"><div class="nm">${esc(accName(a))}</div>
             <div class="tk">${esc(a.label)}</div></div></div>
         <div class="row-quest"><b title="${esc(q.name)}">${esc(q.name)}</b>
           <i${q.error ? ' title="' + esc(q.error) + '"' : ''}>${esc(note)}</i></div>
-        <div><span class="qt">${esc(TASK_PL[q.task] || q.task || '—')}</span></div>
+        <div><span class="qt">${esc(TASK_LABEL[q.task] || q.task || '—')}</span></div>
         <div class="num orb">${q.orbs ? '+' + q.orbs : '—'}</div>
         <div class="row-progress">
           <div class="bar"><i style="width:${pct}%;background:${q.state === 'done' ? '#4A4A4A' : 'var(--accent)'}"></i></div>
@@ -860,8 +956,8 @@ function renderQuests() {
     }
   }
   $('quests-list').innerHTML = rows.length ? rows.join('')
-    : `<div class="empty">Brak questów.<br>Uruchom konto – lista pojawi się po wczytaniu Discorda.</div>`;
-  $('quests-meta').textContent = `${running} AKTYWNYCH`;
+    : `<div class="empty">No quests yet.<br>Start an account – the list appears once Discord has loaded.</div>`;
+  $('quests-meta').textContent = `${running} ACTIVE`;
 
   const skipped = [];
   for (const a of state.accounts) {
@@ -871,7 +967,7 @@ function renderQuests() {
           <div class="who"><div class="nm">${esc(accName(a))}</div>
             <div class="tk">${esc(a.label)}</div></div></div>
         <div class="row-quest"><b>${esc(q.name)}</b>
-          <i>${esc(TASK_PL[q.task] || q.task || '—')}</i></div>
+          <i>${esc(TASK_LABEL[q.task] || q.task || '—')}</i></div>
         <div class="num">${esc(rewardLabel(q.rewards))}</div>
       </div>`);
     }
@@ -881,10 +977,10 @@ function renderQuests() {
   $('skipped-meta').textContent = String(skipped.length);
 }
 
-/* ── Render: logi ──────────────────────────────────────────────────────── */
+/* ── Render: logs ──────────────────────────────────────────────────────── */
 function logKind(msg) {
-  if (/błąd|blad|error|401|nie udało|odmówił|limit/i.test(msg)) return 'err';
-  if (/ukończono|gotowe|zakończone|orbs/i.test(msg)) return 'ok';
+  if (/error|fail|401|refused|rate limit/i.test(msg)) return 'err';
+  if (/completed|done|finished|orbs/i.test(msg)) return 'ok';
   return '';
 }
 
@@ -900,7 +996,7 @@ function renderLogs() {
       <span class="t">${fmtClock(l.ts)}</span>
       <span class="g">${esc(l.who)}</span>
       <span class="m">${esc(l.msg)}</span></div>`).join('')
-    : '<div class="log-line"><span class="m">Brak wpisów – uruchom konto.</span></div>';
+    : '<div class="log-line"><span class="m">No entries yet – start an account.</span></div>';
 
   for (const id of ['logs', 'logs-full']) {
     const box = $(id);
@@ -908,10 +1004,10 @@ function renderLogs() {
     box.innerHTML = html;
     if (atBottom) box.scrollTop = box.scrollHeight;
   }
-  $('logs-meta').textContent = `${all.length} WPISÓW`;
+  $('logs-meta').textContent = `${all.length} ENTRIES`;
 }
 
-/* ── Render: typy zadań / zasoby ───────────────────────────────────────── */
+/* ── Render: task types / resources ───────────────────────────────────── */
 function renderTasks() {
   const counts = {};
   for (const a of state.accounts) {
@@ -933,24 +1029,24 @@ function renderMemory() {
   $('memory-bar').classList.toggle('stale', active === 0);
 
   $('memory-main').innerHTML = active > 0
-    ? `Otwarte konteksty: <b>${active}</b> · szacowane zużycie
-       <b>${(active * RAM_PER_CONTEXT).toLocaleString('pl-PL')} MB</b>`
-    : `Silnik bezczynny · przy równoległości ${state.concurrency} to około
-       <b>${(planned * RAM_PER_CONTEXT).toLocaleString('pl-PL')} MB</b>`;
-  $('memory-sub').textContent = `~${RAM_PER_CONTEXT} MB / kontekst · chromium ${
-    state.headless ? 'headless' : 'z oknem'}`;
+    ? `Open contexts: <b>${active}</b> · estimated usage
+       <b>${(active * RAM_PER_CONTEXT).toLocaleString('en-US')} MB</b>`
+    : `Engine idle · at concurrency ${state.concurrency} that's about
+       <b>${(planned * RAM_PER_CONTEXT).toLocaleString('en-US')} MB</b>`;
+  $('memory-sub').textContent = `~${RAM_PER_CONTEXT} MB / context · chromium ${
+    state.headless ? 'headless' : 'windowed'}`;
   $('memory-fill').style.width =
     Math.min(100, (active / Math.max(1, state.concurrency)) * 100) + '%';
   $('btn-stop-all').disabled = active === 0;
 }
 
-/* ── Render: ustawienia ────────────────────────────────────────────────── */
+/* ── Render: settings ──────────────────────────────────────────────────── */
 function renderSettings() {
   const range = $('conc-range'), input = $('conc-input');
   if (document.activeElement !== range) range.value = state.concurrency;
   if (document.activeElement !== input) input.value = state.concurrency;
   $('conc-note').textContent =
-    `~${(state.concurrency * RAM_PER_CONTEXT).toLocaleString('pl-PL')} MB RAM`;
+    `~${(state.concurrency * RAM_PER_CONTEXT).toLocaleString('en-US')} MB RAM`;
 
   $('tg-headed').classList.toggle('on', !state.headless);
   $('tg-onlyorbs').classList.toggle('on', state.onlyOrbs !== false);
@@ -980,11 +1076,26 @@ function setView(next) {
   renderHeader();
 }
 
-/* ── Interakcje ────────────────────────────────────────────────────────── */
+/* ── Interactions ──────────────────────────────────────────────────────── */
 document.addEventListener('click', e => {
+  const menuToggle = e.target.closest('[data-menu-toggle]');
+  if (menuToggle) {
+    e.stopPropagation();
+    const id = menuToggle.dataset.menuToggle;
+    openMenu = openMenu === id ? null : id;
+    renderRowsFull();
+    return;
+  }
+
   const act = e.target.closest('button[data-act]');
   if (act) {
     e.stopPropagation();
+    if (act.dataset.act === 'copy-token') {
+      openMenu = null;
+      copyToken(act.dataset.id);
+      renderRowsFull();
+      return;
+    }
     post('/api/' + act.dataset.act, { id: act.dataset.id });
     act.disabled = true;
     return;
@@ -1000,6 +1111,9 @@ document.addEventListener('click', e => {
     if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
     if (state) renderRows();
   }
+
+  // Any other click closes an open account menu.
+  if (openMenu !== null) { openMenu = null; renderRowsFull(); }
 });
 
 $('btn-start-all').onclick = () => post('/api/start-all');
@@ -1010,17 +1124,17 @@ $('conc-range').oninput = e => {
   $('conc-input').value = e.target.value;
   $('chip-conc-val').textContent = pad2(e.target.value);
   $('conc-note').textContent =
-    `~${(e.target.value * RAM_PER_CONTEXT).toLocaleString('pl-PL')} MB RAM`;
+    `~${(e.target.value * RAM_PER_CONTEXT).toLocaleString('en-US')} MB RAM`;
 };
 $('conc-range').onchange = e => post('/api/concurrency', { value: +e.target.value });
 $('conc-input').onchange = e => post('/api/concurrency', { value: +e.target.value });
 
-// Przełącznik „Pokaż okna” jest odwrotnością headless.
+// The "Show windows" toggle is the inverse of headless.
 $('tg-headed').onclick = () => post('/api/headless', { value: !state.headless });
 $('tg-onlyorbs').onclick = () => post('/api/only-orbs', { value: !(state.onlyOrbs !== false) });
 $('tg-desktop').onclick = () => post('/api/desktop-mode', { value: !state.desktopMode });
 
-/* ── Strumień stanu ────────────────────────────────────────────────────── */
+/* ── State stream ──────────────────────────────────────────────────────── */
 setInterval(renderConnection, 1000);
 
 function connect() {
