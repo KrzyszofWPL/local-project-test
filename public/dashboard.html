@@ -388,6 +388,10 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
   color: #E3B341; }
 .proxy-note.err { background: rgba(255,23,68,.1); border: 1px solid rgba(255,23,68,.35);
   color: #FF8A80; }
+.proxy-note.ok { background: rgba(229,57,53,.07); border: 1px solid rgba(229,57,53,.3);
+  color: var(--fg-dim); }
+.proxy-note:not(.warn):not(.err):not(.ok) { border: 1px solid var(--line);
+  background: rgba(10,10,10,.35); color: var(--fg-faint); }
 .proxy-note ul { margin: 7px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11px; }
 
 /* ── Toast ───────────────────────────────────────────────────────────── */
@@ -639,6 +643,10 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             <button class="btn btn-ghost small" id="btn-reload-proxies">
               <span class="ms">refresh</span> Reload ip.txt
             </button>
+            <button class="btn btn-ghost small" id="btn-test-proxies"
+              title="Dials every proxy in ip.txt and reports its exit IP">
+              <span class="ms">network_check</span> Test all proxies
+            </button>
           </div>
 
           <div class="rail-label tight" style="margin-top:26px">ACCEPTED FORMATS</div>
@@ -666,10 +674,18 @@ socks5://host:port</pre>
               to be flagged in day-to-day use.</li>
             <li><b>Mobile (4G/5G)</b> – the most trusted by Discord and the most expensive.
               Worth it only for accounts you care about.</li>
+            <li><b>Free, and actually usable</b> – Webshare's free plan (10 proxies, ~1 GB
+              a month, handed out as <code>host:port:user:pass</code>), a proxy you run
+              yourself on an always-free cloud VM (Oracle Cloud, Google Cloud, AWS), or your
+              phone's hotspot for one mobile IP.</li>
           </ul>
-          <p class="hint-text"><b>Avoid free public proxy lists.</b> Whoever runs the proxy
-            sees your traffic, and these tokens are full account access – a free list is an
-            easy way to lose every account at once.</p>
+          <p class="hint-text"><b>Free public proxy lists are not worth it.</b> Most entries
+            are already dead, and the ones that answer are shared with everyone else abusing
+            them – Discord has usually flagged those IPs long ago, so you trade a
+            <code>429</code> for a CAPTCHA or a locked account. A hostile proxy cannot read
+            your HTTPS traffic, but it can refuse it or try to intercept it, which just
+            breaks the run. Hit "Test all proxies" after pasting such a list to see how few
+            of them answer at all.</p>
         </div>
       </section>
 
@@ -1302,7 +1318,39 @@ function renderProxySettings() {
 
   $('proxy-status').innerHTML = cards.map(c =>
     `<div class="proxy-stat"><div class="k">${c.k}</div>
-      <div class="v ${c.cls}">${esc(c.v)}</div></div>`).join('') + notes;
+      <div class="v ${c.cls}">${esc(c.v)}</div></div>`).join('')
+    + notes + proxyTestReport(p);
+
+  const t = p.test || {};
+  $('btn-test-proxies').disabled = t.running || !p.count;
+  $('btn-reload-proxies').disabled = !!t.running;
+  $('btn-test-proxies').lastChild.textContent = t.running
+    ? ` Testing ${t.done} / ${t.total}…` : ' Test all proxies';
+}
+
+/** Result of the last "Test all proxies" run – dead entries listed by line. */
+function proxyTestReport(p) {
+  const t = p.test;
+  const results = (t && t.results) || [];
+  if (!t || (!t.running && !results.length)) return '';
+
+  const dead = results.filter(r => !r.ok);
+  if (t.running) {
+    return `<div class="proxy-note">Testing proxies – ${t.done} of ${t.total} checked,
+      ${t.ok} working so far. Each dead proxy costs a 15 s timeout, so a long
+      list takes a while.</div>`;
+  }
+
+  const head = `${t.ok} of ${t.total} ${t.total === 1 ? 'proxy works' : 'proxies work'}`;
+  if (!dead.length) {
+    return `<div class="proxy-note ok">${head} – every entry in ${esc(p.fileName)}
+      answered.</div>`;
+  }
+  return `<div class="proxy-note err">${head}. These did not answer and are worth
+    removing from ${esc(p.fileName)}:<ul>${dead.slice(0, 20).map(r =>
+      `<li>${esc(r.label)} – ${esc(r.error)}</li>`).join('')}</ul>
+    ${dead.length > 20 ? `<div style="margin-top:6px">…and ${dead.length - 20} more.</div>` : ''}
+  </div>`;
 }
 
 /* ── Render root ───────────────────────────────────────────────────────── */
@@ -1404,6 +1452,13 @@ $('btn-reload-proxies').onclick = async () => {
   const res = await post('/api/reload-proxies');
   const data = await res.json().catch(() => ({}));
   toast(`ip.txt reloaded – ${data.count ?? 0} proxies`);
+};
+$('btn-test-proxies').onclick = async () => {
+  const res = await post('/api/proxy-test-all');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return toast(data.error || 'Could not start the test', true);
+  // Progress and the final report arrive through the state stream.
+  toast(`Testing ${data.total} proxies…`);
 };
 
 /* ── State stream ──────────────────────────────────────────────────────── */

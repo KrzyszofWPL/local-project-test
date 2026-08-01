@@ -55,6 +55,12 @@ IP that proxy actually gives you. Each account also checks its own exit IP right
 before logging in, so a dead proxy is reported as a dead proxy instead of looking
 like a bad token.
 
+**Test all proxies** (Settings → Network) dials every entry in `ip.txt` at once,
+eight at a time, and lists the ones that never answered so you can delete them.
+Worth running whenever you paste in a new list. Exit IPs are checked against
+`api.ipify.org`; set `PROXY_CHECK_URL` to any endpoint answering `{"ip": "..."}`
+if that one is blocked or rate limited where you are.
+
 ### Where to get proxies
 
 Discord is suspicious of datacenter IP ranges, so **residential** or **mobile**
@@ -71,9 +77,22 @@ rotates mid-quest breaks long `PLAY_ON_DESKTOP` runs.
 - **Mobile (4G/5G)** – the most trusted by Discord and the most expensive. Worth
   it only for accounts you care about.
 
-**Avoid free public proxy lists.** Whoever runs the proxy sees your traffic, and
-these tokens are full account access – a free list is an easy way to lose every
-account at once.
+If it has to be free:
+
+- **Webshare's free plan** – 10 proxies and ~1 GB a month after signing up, handed
+  out as `host:port:user:pass`, which this file already understands.
+- **Your own proxy on an always-free cloud VM** – Oracle Cloud Always Free, Google
+  Cloud or AWS free tier, running `3proxy` or `Dante`. Dedicated IPs nobody else
+  is burning, which is what makes them worth the setup.
+- **Your phone's hotspot** – one mobile IP, the kind Discord trusts most. Toggling
+  airplane mode usually rotates it.
+
+**Free public proxy lists are not worth it.** Most entries are already dead, and
+the ones that answer are shared with everyone else abusing them – Discord has
+usually flagged those IPs long ago, so you trade a `429` for a CAPTCHA or a locked
+account. A hostile proxy cannot read your HTTPS traffic, but it can refuse it or
+try to intercept it, which just breaks the run. Run **Test all proxies** after
+pasting such a list to see how few of them answer at all.
 
 ## Settings
 

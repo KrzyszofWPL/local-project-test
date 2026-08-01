@@ -18,6 +18,11 @@ const PROFILES_DIR = path.join(__dirname, 'profiles');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36';
 
+// What a proxy is asked for when checking its exit IP. Override with
+// PROXY_CHECK_URL if ipify is blocked or rate limited where you are; any
+// endpoint answering {"ip": "..."} will do.
+const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?format=json';
+
 const CLIENT_VERSION = '1.0.9165';
 const ELECTRON_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) discord/' + CLIENT_VERSION
@@ -65,6 +70,9 @@ function shortError(e) {
   return String(e && e.message ? e.message : e)
     .replace(ANSI, '')
     .split('\n')[0]
+    // "apiRequestContext.get: connect ECONNREFUSED …" – the Playwright call
+    // name means nothing to someone looking at a proxy list.
+    .replace(/^apiRequestContext\.\w+:\s*/, '')
     .trim();
 }
 
@@ -82,6 +90,7 @@ class Engine extends EventEmitter {
     this.useProxies = process.env.USE_PROXIES !== 'false';
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this.proxyList = { file: PROXY_FILE, exists: false, proxies: [], errors: [] };
+    this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
     this._loadState();
     this.loadProxies();
     this.loadTokens();
@@ -154,6 +163,10 @@ class Engine extends EventEmitter {
   // ── Proxies ──────────────────────────────────────────────────────────────
   loadProxies() {
     this.proxyList = loadProxies();
+    // Old results describe proxies that may no longer be in the file.
+    if (!this.proxyTest.running) {
+      this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
+    }
     this._assignProxies();
     this.emit('update');
   }
@@ -192,12 +205,11 @@ class Engine extends EventEmitter {
     return proxyUrl(acc.proxy);
   }
 
-  /** Sends one request through the account's proxy and reports the exit IP. */
-  async testProxy(id) {
-    const acc = this.accounts.find(a => a.id === String(id));
-    if (!acc) throw new Error('No such account: ' + id);
-    if (!acc.proxy) throw new Error('No proxy assigned to this account');
-
+  /**
+   * Dials one proxy and returns the exit IP it gives us. Deliberately
+   * independent of any account, so a whole ip.txt can be checked at once.
+   */
+  async _probeProxy(proxy, timeout = 20000) {
     let request;
     try {
       ({ request } = require('playwright'));
@@ -207,28 +219,95 @@ class Engine extends EventEmitter {
 
     const ctx = await request.newContext({
       proxy: {
-        server: acc.proxy.server,
-        username: acc.proxy.username ?? undefined,
-        password: acc.proxy.password ?? undefined,
+        server: proxy.server,
+        username: proxy.username ?? undefined,
+        password: proxy.password ?? undefined,
       },
-      timeout: 20000,
-      ignoreHTTPSErrors: true,
+      timeout,
     });
     try {
-      const res = await ctx.get('https://api.ipify.org?format=json');
+      const res = await ctx.get(PROXY_CHECK_URL);
       if (!res.ok()) throw new Error('proxy answered with HTTP ' + res.status());
-      const ip = (await res.json()).ip;
-      this._push(acc, { proxyIp: ip, proxyError: null });
-      this._log(acc, `Proxy ${acc.proxy.label} works – exit IP ${ip}`);
-      return ip;
-    } catch (e) {
-      const why = shortError(e);
-      this._push(acc, { proxyIp: null, proxyError: why });
-      this._log(acc, `Proxy ${acc.proxy.label} failed: ${why}`);
-      throw new Error(why);
+      return (await res.json()).ip;
     } finally {
       try { await ctx.dispose(); } catch (_) {}
     }
+  }
+
+  /** Writes a probe result onto every account that uses this proxy. */
+  _applyProbe(proxy, ip, error) {
+    for (const acc of this.accounts) {
+      if (!acc.proxy || acc.proxy.server !== proxy.server) continue;
+      Object.assign(acc, { proxyIp: ip, proxyError: error });
+      this._log(acc, ip
+        ? `Proxy ${proxy.label} works – exit IP ${ip}`
+        : `Proxy ${proxy.label} failed: ${error}`);
+    }
+    this.emit('update');
+  }
+
+  /** Sends one request through the account's proxy and reports the exit IP. */
+  async testProxy(id) {
+    const acc = this.accounts.find(a => a.id === String(id));
+    if (!acc) throw new Error('No such account: ' + id);
+    if (!acc.proxy) throw new Error('No proxy assigned to this account');
+
+    try {
+      const ip = await this._probeProxy(acc.proxy);
+      this._applyProbe(acc.proxy, ip, null);
+      return ip;
+    } catch (e) {
+      const why = shortError(e);
+      this._applyProbe(acc.proxy, null, why);
+      throw new Error(why);
+    }
+  }
+
+  /**
+   * Checks every entry in ip.txt. Free and scraped proxy lists are mostly
+   * dead on arrival, so weeding them out in one pass is the difference
+   * between a usable list and a pile of failed logins.
+   *
+   * Returns immediately – progress arrives through the normal state stream.
+   */
+  testAllProxies() {
+    if (this.proxyTest.running) return this.proxyTest;
+    const list = this.proxyList.proxies;
+    if (!list.length) throw new Error('No proxies in ip.txt');
+
+    this.proxyTest = { running: true, done: 0, total: list.length, ok: 0, results: [] };
+    this.emit('update');
+
+    let next = 0;
+    const worker = async () => {
+      while (next < list.length) {
+        const proxy = list[next++];
+        let entry;
+        try {
+          const ip = await this._probeProxy(proxy, 15000);
+          this._applyProbe(proxy, ip, null);
+          entry = { label: proxy.label, ok: true, ip };
+          this.proxyTest.ok += 1;
+        } catch (e) {
+          const why = shortError(e);
+          this._applyProbe(proxy, null, why);
+          entry = { label: proxy.label, ok: false, error: why };
+        }
+        this.proxyTest.done += 1;
+        this.proxyTest.results.push(entry);
+        this.emit('update');
+      }
+    };
+
+    // A dead proxy costs a full timeout, so check several at a time.
+    const workers = Array.from({ length: Math.min(8, list.length) }, worker);
+    Promise.all(workers).finally(() => {
+      this.proxyTest.running = false;
+      this.proxyTest.finishedAt = Date.now();
+      this.emit('update');
+    });
+
+    return this.proxyTest;
   }
 
   // ── View for the panel (no tokens or browser handles) ──────────────────────
@@ -249,6 +328,7 @@ class Engine extends EventEmitter {
         // know without dialing every proxy.
         shared: this.useProxies && this.proxyList.proxies.length > 0
           && this.accounts.length > this.proxyList.proxies.length,
+        test: this.proxyTest,
       },
       accounts: this.accounts.map(a => {
         const target = a.quests.reduce((s, q) => s + (q.target || 0), 0);
@@ -459,8 +539,7 @@ class Engine extends EventEmitter {
       if (proxy) {
         this._push(acc, { message: `Connecting through ${proxy.label}…` });
         try {
-          const res = await context.request.get('https://api.ipify.org?format=json',
-            { timeout: 20000 });
+          const res = await context.request.get(PROXY_CHECK_URL, { timeout: 20000 });
           if (!res.ok()) throw new Error('HTTP ' + res.status());
           const ip = (await res.json()).ip;
           this._push(acc, { proxyIp: ip, proxyError: null });

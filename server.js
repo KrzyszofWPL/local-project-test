@@ -91,6 +91,11 @@ const server = http.createServer(async (req, res) => {
         case '/api/proxy-test':
           return json(res, 200, { ip: await engine.testProxy(body.id) });
 
+        // Kicks the run off and answers straight away – progress reaches the
+        // panel through the state stream.
+        case '/api/proxy-test-all':
+          return json(res, 200, { ok: true, total: engine.testAllProxies().total });
+
         case '/api/use-proxies':
           engine.setUseProxies(body.value);
           return json(res, 200, { ok: true });
