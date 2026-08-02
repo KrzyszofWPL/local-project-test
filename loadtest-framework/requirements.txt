@@ -1,2 +1,0 @@
-playwright>=1.44
-httpx[socks]>=0.27
