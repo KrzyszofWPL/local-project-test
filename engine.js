@@ -587,36 +587,18 @@ class Engine extends EventEmitter {
     });
   }
 
-  async _ensureBrowser(proxied) {
-    const key = proxied ? 'proxied' : 'plain';
-    const current = this._browsers[key];
-    if (current && current.isConnected()) return current;
-
-    let chromium;
-    try {
-      ({ chromium } = require('playwright'));
-    } catch (_) {
-      throw new Error('Playwright is not installed. Run: npm install');
-    }
-
-    const browser = await chromium.launch({
-      headless: this.headless,
-      proxy: proxied ? { server: 'http://per-context' } : undefined,
-      args: [
-        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--no-first-run', '--disable-background-networking',
-        '--disable-default-apps', '--disable-extensions', '--disable-sync',
-        '--disable-background-timer-throttling',
-        '--disable-backgrounding-occluded-windows',
-        '--disable-renderer-backgrounding',
-        // WebRTC opens UDP sockets directly, bypassing the HTTP/SOCKS proxy and
-        // exposing the machine's real address – the page would then be talking
-        // from a different IP than every other request in the context.
-        ...(proxied ? WEBRTC_ARGS : []),
-      ],
-    });
-    this._browsers[key] = browser;
-    return browser;
+  // Write the raw token into localStorage so Discord logs in with it. Used only
+  // for a fresh profile or when a resumed session has expired.
+  async _injectToken(page, token) {
+    await page.evaluate(tk => {
+      let ls = window.localStorage;
+      if (!ls) {
+        const iframe = document.createElement('iframe');
+        document.body.appendChild(iframe);
+        ls = iframe.contentWindow.localStorage;
+      }
+      ls.setItem('token', JSON.stringify(tk));
+    }, token.trim());
   }
 
   _closeIdleBrowsers() {
@@ -781,6 +763,14 @@ class Engine extends EventEmitter {
 
       await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
 
+      // Page → queue → you. The injected script calls this when Discord demands
+      // a CAPTCHA (to enroll or to claim); it resolves once you confirm in the
+      // panel, and only one account holds the lane at a time.
+      await page.exposeFunction('__questAwaitVerify', async (questId, reason) => {
+        const { ok } = await this._enterVerifyQueue(acc, reason || 'Verification required');
+        return !!ok;
+      });
+
       this._push(acc, { status: 'running', message: 'Opening Discord…' });
 
       await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
@@ -796,19 +786,21 @@ class Engine extends EventEmitter {
         this._log(acc, 'Resuming the saved session from this profile (no token login)');
       } else {
         this._log(acc, 'No stored session in this profile – signing in with the token once');
-        await page.evaluate(tk => {
-          let ls = window.localStorage;
-          if (!ls) {
-            const iframe = document.createElement('iframe');
-            document.body.appendChild(iframe);
-            ls = iframe.contentWindow.localStorage;
-          }
-          ls.setItem('token', JSON.stringify(tk));
-        }, acc.token.trim());
+        await this._injectToken(page, acc.token);
       }
 
       this._push(acc, { message: 'Loading Discord…' });
       await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
+
+      // A resumed session can be expired – Discord then bounces back to /login.
+      // Detect that and log in with the token once, rather than silently sitting
+      // on the login page and reporting "no quests".
+      if (hadSession && /\/login/.test(page.url())) {
+        this._log(acc, 'Saved session has expired – signing in with the token');
+        await this._injectToken(page, acc.token);
+        await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
+      }
+
       await page.waitForFunction(() => !!window.webpackChunkdiscord_app);
       await page.waitForTimeout(12000);
 
@@ -910,6 +902,21 @@ class Engine extends EventEmitter {
         break;
       }
 
+      case 'qclaim': {
+        const q = acc.quests.find(x => x.id === ev.id);
+        if (q) q.claimState = ev.state;
+        const msg = {
+          claimed: ev.already ? 'Reward already claimed' : 'Reward claimed',
+          captcha: 'Reward needs verification – solve it in the browser',
+          'captcha-again': 'Reward still needs verification',
+          unclaimed: 'Reward left unclaimed (verification skipped)',
+          error: 'Could not claim reward: ' + (ev.err || 'unknown'),
+        }[ev.state] || ('claim: ' + ev.state);
+        this._log(acc, msg + (q ? ` – ${q.name}` : ''));
+        this.emit('update');
+        break;
+      }
+
       case 'qretry': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) {
@@ -926,16 +933,9 @@ class Engine extends EventEmitter {
       case 'qerr': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) { q.state = 'error'; q.error = ev.err; }
-        if (ev.captcha) {
-          this._push(acc, { needsCaptcha: true });
-          // Queue for a person instead of failing outright – and keep the run
-          // alive so the browser window stays open to solve it in.
-          this._enterVerifyQueue(acc, 'Discord asked for a CAPTCHA')
-            .then(({ ok }) => {
-              if (ok) this._log(acc, 'Verification confirmed – the quest can be retried.');
-            })
-            .catch(() => {});
-        }
+        // The injected script drives the verification queue itself (via
+        // __questAwaitVerify) and will retry, so here we only flag it.
+        if (ev.captcha) this._push(acc, { needsCaptcha: true });
         this._log(acc, 'Error: ' + ev.err);
 
         const isGameTask = q && ['PLAY_ON_DESKTOP', 'STREAM_ON_DESKTOP'].includes(q.task);

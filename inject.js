@@ -42,6 +42,55 @@ module.exports = `(async () => {
 
   if (!api) return { fatal: 'api module not found' };
 
+  // ── API call layer ────────────────────────────────────────────────────────
+  // Defined up front so every request – including the early /quests/@me fetch –
+  // goes through the same timeout + rate-limit handling. Discord API calls can
+  // simply never return (rate limit, dropped session); without a timeout the
+  // loop sits silently and looks stuck.
+  const withTimeout = (p, ms, label) => Promise.race([
+    p,
+    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
+  ]);
+
+  const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+
+  // A rate limit is a request to slow down, not a refusal. The distinction
+  // matters: treating it like an error and retrying with a different task
+  // only makes the limit worse. The Polish fragment below matches Discord's
+  // own rate-limit message, since the session locale is pl-PL.
+  const isRateLimit = (e) => {
+    if (!e) return false;
+    if (e.status === 429) return true;
+    return /rate limit|tempo zosta|too many requests/i.test(String(errMsg(e)));
+  };
+
+  const retryAfterMs = (e) => {
+    const ra = e && e.body && (e.body.retry_after != null ? e.body.retry_after : e.body.retryAfter);
+    return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
+  };
+
+  // Every API call goes through: a timeout, plus patient waiting out of any
+  // rate limit.
+  const apiCall = async (method, url, body, label) => {
+    let lastErr = null;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
+        return await withTimeout(p, 30000, label);
+      } catch(e) {
+        lastErr = e;
+        if (isRateLimit(e) && attempt < 4) {
+          const wait = retryAfterMs(e);
+          log('rate limited (' + label + ') - waiting ' + Math.round(wait/1000) + 's');
+          await sleep(wait);
+          continue;
+        }
+        throw e;
+      }
+    }
+    throw lastErr;
+  };
+
   // Account identity for the panel (username, avatar, email)
   try {
     const u = UserStore && UserStore.getCurrentUser && UserStore.getCurrentUser();
@@ -91,7 +140,7 @@ module.exports = `(async () => {
   let apiQuests = [];
   if (QuestsStore.quests.size === 0) {
     try {
-      const res = await api.get({ url: '/quests/@me' });
+      const res = await apiCall('GET', '/quests/@me', null, 'quests-list');
       const raw = (res && res.body && (res.body.quests || res.body)) || [];
       apiQuests = (Array.isArray(raw) ? raw : []).map(camel);
       log('QuestsStore stayed empty - fetched ' + apiQuests.length + ' quest(s) from the API');
@@ -197,51 +246,6 @@ module.exports = `(async () => {
   // ── 4. Quest enrollment ───────────────────────────────────────────────────
   log('Found ' + selected.length + ' quest(s) to do (out of ' + all.length + ' visible)');
 
-  // Discord API calls can simply never return (rate limit, dropped session).
-  // Without a timeout the loop sits silently and looks stuck.
-  const withTimeout = (p, ms, label) => Promise.race([
-    p,
-    new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
-  ]);
-
-  const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
-
-  // A rate limit is a request to slow down, not a refusal. The distinction
-  // matters: treating it like an error and retrying with a different task
-  // only makes the limit worse. The Polish fragment below matches Discord's
-  // own rate-limit message, since the session locale is pl-PL.
-  const isRateLimit = (e) => {
-    if (!e) return false;
-    if (e.status === 429) return true;
-    return /rate limit|tempo zosta|too many requests/i.test(String(errMsg(e)));
-  };
-
-  const retryAfterMs = (e) => {
-    const ra = e && e.body && (e.body.retry_after != null ? e.body.retry_after : e.body.retryAfter);
-    return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
-  };
-
-  // Every API call goes through: a timeout, plus patient waiting out of any
-  // rate limit.
-  const apiCall = async (method, url, body, label) => {
-    let lastErr = null;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
-        return await withTimeout(p, 30000, label);
-      } catch(e) {
-        lastErr = e;
-        if (isRateLimit(e) && attempt < 4) {
-          const wait = retryAfterMs(e);
-          log('rate limited (' + label + ') - waiting ' + Math.round(wait/1000) + 's');
-          await sleep(wait);
-          continue;
-        }
-        throw e;
-      }
-    }
-    throw lastErr;
-  };
 
   // A 'location' value that works once will work for later quests too.
   // Without caching it we'd try 7 variants per quest, which quickly trips
@@ -303,9 +307,13 @@ module.exports = `(async () => {
       log('Enrolling in quest...');
       const e = await enroll(quest);
       if (!e.ok) {
-        // A CAPTCHA needs a human - there is nothing to come back to later.
+        // A CAPTCHA needs a human. Suspend and wait for you to solve it in this
+        // account's window, then retry the enrollment.
         if (e.captcha) {
           R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: true });
+          let solved = false;
+          try { solved = await awaitVerify(quest.id, 'Enroll: ' + name); } catch(_) {}
+          if (solved) return { retry: true, err: 'retrying after verification' };
           return;
         }
         return { retry: true, err: 'enroll: ' + e.err, rateLimited: !!e.rateLimited };
@@ -344,7 +352,7 @@ module.exports = `(async () => {
             { timestamp: secondsNeeded }, 'video-progress final');
         } catch(_) {}
       }
-      R({ t: 'qdone', id: quest.id, orbs: orbs });
+      await finishQuest(quest, orbs);
       return;
     }
 
@@ -397,7 +405,7 @@ module.exports = `(async () => {
       }
 
       if (!okA) return { retry: true, err: errA || 'unknown error' };
-      R({ t: 'qdone', id: quest.id, orbs: orbs });
+      await finishQuest(quest, orbs);
       return;
     }
 
@@ -479,7 +487,7 @@ module.exports = `(async () => {
 
       restore();
       if (!ok) return { retry: true, err: failErr || 'unknown error' };
-      R({ t: 'qdone', id: quest.id, orbs: orbs });
+      await finishQuest(quest, orbs);
       return;
     }
 
@@ -500,6 +508,76 @@ module.exports = `(async () => {
   const RETRY_PAUSE = 30000;
 
   const nameOf = q => (q.config && q.config.messages && q.config.messages.questName) || q.id;
+
+  // ── Reward claim ──────────────────────────────────────────────────────────
+  // Finishing the task requirements does not hand over the reward – Discord
+  // gates the actual claim behind an hCaptcha. That check is deliberate: it
+  // wants a human. So the bot asks for the claim, and when Discord demands
+  // verification it suspends and waits for YOU to solve it in this account's own
+  // browser window (over this account's proxy). __questAwaitVerify is provided by
+  // the panel and returns once you confirm; accounts are handled one at a time.
+  const awaitVerify = (typeof window.__questAwaitVerify === 'function')
+    ? window.__questAwaitVerify
+    : (async () => false);
+
+  const isClaimed = async (quest) => {
+    try {
+      const q = QuestsStore.getQuest && QuestsStore.getQuest(quest.id);
+      const us = q && q.userStatus;
+      if (us && (us.claimedAt || us.claimed_at)) return true;
+    } catch(_) {}
+    try {
+      const res = await apiCall('GET', '/quests/@me', null, 'claimed-check');
+      const raw = (res && res.body && (res.body.quests || res.body)) || [];
+      const found = (Array.isArray(raw) ? raw : []).find(x => x && x.id === quest.id);
+      const us = found && (found.user_status || found.userStatus);
+      return !!(us && (us.claimed_at || us.claimedAt));
+    } catch(_) {}
+    return false;
+  };
+
+  const attemptClaim = async (quest) => {
+    try {
+      await apiCall('POST', '/quests/' + quest.id + '/claim-reward', {}, 'claim');
+      return { ok: true };
+    } catch(e) {
+      const msg = String(errMsg(e));
+      const body = e && e.body;
+      const wantsCaptcha = /captcha|verif/i.test(msg)
+        || !!(body && (body.captcha_key || body.captcha_service || body.captcha_sitekey));
+      if (wantsCaptcha) return { ok: false, captcha: true, err: msg };
+      // Nothing left to claim is a success as far as we're concerned.
+      if (/already|claimed|not.*eligible|no.*reward/i.test(msg)) return { ok: true, already: true };
+      return { ok: false, err: msg };
+    }
+  };
+
+  const claimReward = async (quest) => {
+    let r = await attemptClaim(quest);
+
+    if (r.captcha) {
+      R({ t: 'qclaim', id: quest.id, state: 'captcha' });
+      log('Reward for "' + nameOf(quest) + '" needs verification – waiting for you to solve it');
+      let solved = false;
+      try { solved = await awaitVerify(quest.id, 'Claim reward: ' + nameOf(quest)); } catch(_) {}
+      if (!solved) { R({ t: 'qclaim', id: quest.id, state: 'unclaimed' }); return; }
+      // You may have completed the claim in Discord's own UI while solving it;
+      // re-check before trying again so we don't double-submit.
+      if (await isClaimed(quest)) { R({ t: 'qclaim', id: quest.id, state: 'claimed' }); return; }
+      r = await attemptClaim(quest);
+    }
+
+    if (r.ok) R({ t: 'qclaim', id: quest.id, state: 'claimed', already: !!r.already });
+    else if (r.captcha) R({ t: 'qclaim', id: quest.id, state: 'captcha-again' });
+    else R({ t: 'qclaim', id: quest.id, state: 'error', err: r.err });
+  };
+
+  // Report the requirement as done, then try to claim the reward.
+  const finishQuest = async (quest, orbs) => {
+    R({ t: 'qdone', id: quest.id, orbs: orbs });
+    try { await claimReward(quest); }
+    catch(e) { R({ t: 'qclaim', id: quest.id, state: 'error', err: errMsg(e) }); }
+  };
 
   // Spacing between quests keeps us below the rate-limit threshold.
   const queue = selected.slice();

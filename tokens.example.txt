@@ -1,0 +1,2 @@
+# Put one Discord user token per line. This file is gitignored.
+# Copy it from tokens.example.txt and fill in real tokens.

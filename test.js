@@ -255,8 +255,12 @@ function restoreTokens() {
     const inner = src.match(/async _runInner\(acc\)[\s\S]*?\n  \}/)[0];
     assert.ok(/hadSession/.test(inner),
       'przy istniejącej sesji nie wolno ponownie wstrzykiwać tokenu');
-    assert.ok(inner.indexOf('hadSession') < inner.indexOf("ls.setItem('token'"),
+    // Token wstrzykiwany jest tylko w gałęzi "brak sesji" – sprawdzenie sesji
+    // musi poprzedzać wywołanie _injectToken.
+    assert.ok(inner.indexOf('hadSession') < inner.indexOf('_injectToken'),
       'sprawdzenie sesji musi poprzedzać wstrzyknięcie tokenu');
+    assert.ok(/\/login/.test(inner) && /_injectToken/.test(inner),
+      'wygasła sesja musi mieć zapasowe logowanie tokenem');
   });
 
   await test('profil przeglądarki jest przypisany do tokenu, nie do numeru linii', async () => {
@@ -292,7 +296,7 @@ function restoreTokens() {
     const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
     assert.ok(src.includes('disable_non_proxied_udp'),
       'brak polityki WebRTC – UDP omija proxy i zdradza prawdziwy adres');
-    assert.ok(/proxied \? WEBRTC_ARGS : \[\]/.test(src),
+    assert.ok(/proxy \? WEBRTC_ARGS : \[\]/.test(src),
       'flagi WebRTC mają być stosowane dla przeglądarki z proxy');
   });
 

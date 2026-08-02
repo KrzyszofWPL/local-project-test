@@ -4,3 +4,8 @@ state.json
 *.log
 __pycache__/
 *.pyc
+
+# Secrets – real accounts and proxies live here. Tracked copies are the
+# *.example.txt templates; the working files stay local only.
+tokens.txt
+ip.txt
