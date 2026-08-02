@@ -1,9 +1,3 @@
-/**
- * Testy regresji.  Uruchomienie:  node test.js
- *
- * Bez frameworka – wystarczy Node.
- */
-
 const fs = require('fs');
 const path = require('path');
 const assert = require('assert');
@@ -25,7 +19,6 @@ async function test(name, fn) {
   }
 }
 
-// Podmień tokens.txt na testowe, oryginał odłóż na bok
 function setupTokens() {
   if (fs.existsSync(TOKENS)) fs.copyFileSync(TOKENS, BACKUP);
   fs.writeFileSync(TOKENS, 'aaaa1111bbbb2222\ncccc3333dddd4444\n');
@@ -43,7 +36,6 @@ function restoreTokens() {
 
   const { Engine } = require('./engine.js');
 
-  // ── Podwójne uruchomienie ────────────────────────────────────────────────
   await test('konto nie startuje dwa razy równolegle', async () => {
     const e = new Engine();
     let calls = 0;
@@ -80,14 +72,12 @@ function restoreTokens() {
     assert.strictEqual(calls, 2, `oczekiwano 2 uruchomień po sobie, było ${calls}`);
   });
 
-  // ── Nagłówek X-Super-Properties ──────────────────────────────────────────
   await test('tryb desktop zachowuje client_build_number', async () => {
     delete require.cache[require.resolve('./engine.js')];
     const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
     assert.ok(src.includes('...props'),
       'nagłówek musi być łatany, nie budowany od zera – inaczej build number się zestarzeje');
 
-    // Zbuduj oryginał tak, jak wysyła go klient webowy
     const original = Buffer.from(JSON.stringify({
       os: 'Windows', browser: 'Chrome', client_build_number: 999999,
       release_channel: 'stable',
@@ -116,7 +106,6 @@ function restoreTokens() {
       'żądania do API muszą mieć nadpisany User-Agent, nie tylko super properties');
   });
 
-  // ── Skrypt wstrzykiwany ──────────────────────────────────────────────────
   await test('skrypt wstrzykiwany jest poprawnym JS-em', async () => {
     const s = require('./inject.js');
     require('vm').compileFunction('return ' + s);
@@ -159,8 +148,6 @@ function restoreTokens() {
     const m = s.match(/const apiCall = async[\s\S]*?\n  \};/);
     assert.ok(m, 'nie znaleziono warstwy apiCall');
 
-    // Poza ciałem apiCall nie powinno być żadnych bezpośrednich wywołań –
-    // inaczej omijają obsługę limitu zapytań i limit czasu.
     const outside = s.replace(m[0], '');
     const direct = (outside.match(/api\.(post|get)\(/g) || []).length;
     assert.strictEqual(direct, 0,
@@ -186,7 +173,6 @@ function restoreTokens() {
       'opcje muszą być przekazane do strony przed wstrzyknięciem skryptu');
   });
 
-  // ── Panel ────────────────────────────────────────────────────────────────
   await test('JS panelu jest poprawny składniowo', async () => {
     const html = fs.readFileSync(path.join(__dirname, 'public', 'dashboard.html'), 'utf-8');
     const m = html.match(/<script>([\s\S]*?)<\/script>/);
