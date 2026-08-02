@@ -1,12 +1,3 @@
-/**
- * Script injected into the Discord page.
- *
- * Reports live progress through window.__questReport (exposed from Node
- * via page.exposeFunction), so the panel sees real-time state instead of
- * only the final result.
- *
- * WARNING: this string must not contain backticks or ${...} internally.
- */
 module.exports = `(async () => {
   // Second layer of protection against double injection: even if the script
   // were injected twice into the same page, the second instance exits right
