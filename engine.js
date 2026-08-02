@@ -3,8 +3,10 @@ const path = require('path');
 const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
-const { loadProxies, proxyUrl, normalizeScheme, PROXY_FILE } = require('./proxies.js');
-const { playwrightProxy, lastErrorFor, closeAll: closeBridges } = require('./socks-bridge.js');
+const { loadProxies, proxyUrl, normalizeScheme, applyScheme, PROXY_FILE } = require('./proxies.js');
+const {
+  playwrightProxy, detectScheme, lastErrorFor, closeAll: closeBridges,
+} = require('./socks-bridge.js');
 const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
@@ -75,7 +77,7 @@ class Engine extends EventEmitter {
     // Protocol used for ip.txt lines that have no `scheme://` prefix (e.g. the
     // bare `ip:port:user:pass` template). Persisted UI choice wins over the env
     // default. SOCKS5 here makes an unprefixed list route through the bridge.
-    this.defaultProxyScheme = normalizeScheme(process.env.PROXY_SCHEME || 'http');
+    this.defaultProxyScheme = normalizeScheme(process.env.PROXY_SCHEME || 'auto');
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this.proxyList = { file: PROXY_FILE, exists: false, proxies: [], errors: [] };
     this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
@@ -195,7 +197,33 @@ class Engine extends EventEmitter {
     return proxyUrl(acc.proxy);
   }
 
+  // A bare `ip:port:user:pass` line says nothing about the protocol. Rather than
+  // guess HTTP – which silently resets against every SOCKS5 proxy – ask the
+  // endpoint once and remember the answer.
+  async _resolveScheme(proxy) {
+    if (!proxy || !proxy.pending) return proxy;
+    const found = await detectScheme(proxy).catch(() => null);
+    if (found && found !== proxy.scheme) {
+      applyScheme(proxy, found);
+      this._logAll(`Detected ${proxy.label} as ${found.toUpperCase()}`);
+    } else if (found) {
+      applyScheme(proxy, found);
+    } else {
+      // Undetectable: leave the assumed scheme but stop re-probing every call.
+      proxy.pending = false;
+    }
+    this.emit('update');
+    return proxy;
+  }
+
+  _logAll(msg) {
+    for (const acc of this.accounts) {
+      if (acc.proxy && acc.proxy.label && msg.includes(acc.proxy.label)) this._log(acc, msg);
+    }
+  }
+
   async _probeProxy(proxy, timeout = 20000) {
+    await this._resolveScheme(proxy);
     let request;
     try {
       ({ request } = require('playwright'));
@@ -238,6 +266,7 @@ class Engine extends EventEmitter {
       throw new Error('Playwright is not installed. Run: npm install');
     }
 
+    await this._resolveScheme(acc.proxy);
     const api = await request.newContext({
       proxy: await playwrightProxy(acc.proxy),
       timeout: 20000,
@@ -528,6 +557,7 @@ class Engine extends EventEmitter {
 
   async _runInner(acc) {
     const proxy = acc.proxy;
+    await this._resolveScheme(proxy);
     const browser = await this._ensureBrowser(!!proxy);
 
     const profileDir = path.join(PROFILES_DIR, acc.id);

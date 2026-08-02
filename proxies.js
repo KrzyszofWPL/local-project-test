@@ -9,23 +9,36 @@ const isPort = (s) => /^\d{1,5}$/.test(s) && +s >= 1 && +s <= 65535;
 // Scheme applied to lines that don't carry their own `scheme://` prefix. Lets a
 // whole `ip:port:user:pass` list be treated as e.g. SOCKS5 without editing every
 // line. An explicit prefix on a line always wins over this default.
+//
+// 'auto' means "work it out by probing the endpoint" – see Engine._resolveScheme.
+// It is the sane default: a bare ip:port:user:pass line carries no hint of the
+// protocol, and guessing HTTP silently breaks every SOCKS5 list.
 function normalizeScheme(scheme) {
-  const s = String(scheme || 'http').toLowerCase();
+  const s = String(scheme || 'auto').toLowerCase();
+  if (s === 'auto') return 'auto';
   return SCHEMES.includes(s) ? s : 'http';
 }
 
-function parseLine(line, defaultScheme = 'http') {
+function parseLine(line, defaultScheme = 'auto') {
   let rest = line.trim();
   let scheme = normalizeScheme(defaultScheme);
+  // Whether the protocol is known for certain, or merely assumed. Only assumed
+  // ones may be re-detected later.
+  let explicit = false;
 
   const withScheme = rest.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(.*)$/);
   if (withScheme) {
     scheme = withScheme[1].toLowerCase();
     rest = withScheme[2];
+    explicit = true;
     if (!SCHEMES.includes(scheme)) {
       throw new Error(`unsupported scheme "${scheme}" (use ${SCHEMES.join(', ')})`);
     }
+  } else if (scheme !== 'auto') {
+    explicit = true;   // user forced a protocol for unprefixed lines
   }
+  const pending = scheme === 'auto';
+  if (pending) scheme = 'http';   // placeholder until detection runs
   rest = rest.replace(/\/+$/, '');
   if (!rest) throw new Error('empty entry');
 
@@ -77,6 +90,9 @@ function parseLine(line, defaultScheme = 'http') {
 
   return {
     scheme,
+    explicit,
+    // Set while the protocol is still a guess; cleared once detection resolves it.
+    pending,
     host,
     port: +port,
     username: username || null,
@@ -87,7 +103,15 @@ function parseLine(line, defaultScheme = 'http') {
   };
 }
 
-function loadProxies(file = PROXY_FILE, defaultScheme = process.env.PROXY_SCHEME || 'http') {
+// Rewrite a proxy in place once its real protocol is known.
+function applyScheme(proxy, scheme) {
+  proxy.scheme = scheme;
+  proxy.server = `${scheme}://${proxy.host}:${proxy.port}`;
+  proxy.pending = false;
+  return proxy;
+}
+
+function loadProxies(file = PROXY_FILE, defaultScheme = process.env.PROXY_SCHEME || 'auto') {
   defaultScheme = normalizeScheme(defaultScheme);
   const result = { file, exists: false, proxies: [], errors: [], defaultScheme };
 
@@ -128,4 +152,6 @@ function proxyUrl(proxy) {
   return `${proxy.scheme}://${creds}${proxy.host}:${proxy.port}`;
 }
 
-module.exports = { loadProxies, parseLine, proxyUrl, normalizeScheme, SCHEMES, PROXY_FILE };
+module.exports = {
+  loadProxies, parseLine, proxyUrl, normalizeScheme, applyScheme, SCHEMES, PROXY_FILE,
+};

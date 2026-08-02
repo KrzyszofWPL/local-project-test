@@ -220,6 +220,47 @@ function restoreTokens() {
       'nieznany schemat musi wrócić do http');
   });
 
+  await test('goła linia ip:port:login:hasło jest oznaczona do wykrycia protokołu', async () => {
+    const { parseLine } = require('./proxies.js');
+    const auto = parseLine('83.97.117.98:1080:bob:pass');
+    assert.strictEqual(auto.pending, true, 'bez prefiksu protokół musi być dopiero wykryty');
+    assert.strictEqual(auto.explicit, false);
+
+    // Jawny prefiks jest pewny – nie wolno go nadpisywać wykrywaniem.
+    const explicit = parseLine('socks5://83.97.117.98:1080:bob:pass');
+    assert.strictEqual(explicit.pending, false);
+    assert.strictEqual(explicit.explicit, true);
+    assert.strictEqual(explicit.scheme, 'socks5');
+
+    // Ręczny wybór protokołu też jest pewny.
+    const forced = parseLine('83.97.117.98:1080:bob:pass', 'socks5');
+    assert.strictEqual(forced.pending, false);
+    assert.strictEqual(forced.scheme, 'socks5');
+  });
+
+  await test('wykrywanie rozpoznaje SOCKS5 i przełącza wpis na mostek', async () => {
+    const net = require('net');
+    const { parseLine, applyScheme } = require('./proxies.js');
+    const { detectScheme } = require('./socks-bridge.js');
+
+    // Serwer odpowiadający jak SOCKS5 (0x05 + wybrana metoda).
+    const srv = net.createServer((c) => {
+      c.on('error', () => {});
+      c.on('data', () => c.write(Buffer.from([0x05, 0x02])));
+    });
+    await new Promise(r => srv.listen(0, '127.0.0.1', r));
+    const p = parseLine(`127.0.0.1:${srv.address().port}:bob:pass`);
+    assert.strictEqual(p.scheme, 'http', 'przed wykryciem obowiązuje założenie');
+
+    const found = await detectScheme(p, 4000);
+    assert.strictEqual(found, 'socks5', 'endpoint mówiący 0x05 to SOCKS5');
+    applyScheme(p, found);
+    assert.strictEqual(p.server, `socks5://127.0.0.1:${srv.address().port}`,
+      'server musi zostać przepisany na socks5://');
+    assert.strictEqual(p.pending, false);
+    srv.close();
+  });
+
   await test('proxy SOCKS5 jest kierowane przez lokalny mostek (nie wprost)', async () => {
     const net = require('net');
     const { parseLine } = require('./proxies.js');

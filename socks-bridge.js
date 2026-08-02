@@ -219,6 +219,49 @@ function needsBridge(proxy) {
   return !!proxy && proxy.scheme === 'socks5';
 }
 
+// Ask the endpoint what it actually is. A bare `ip:port:user:pass` line carries
+// no protocol, and dialing a SOCKS5 proxy as HTTP just resets the connection –
+// so probe once instead of guessing. Returns 'socks5', 'http' or null.
+const detected = new Map();
+function detectScheme(proxy, timeout = 8000) {
+  const key = `${proxy.host}:${proxy.port}`;
+  if (detected.has(key)) return Promise.resolve(detected.get(key));
+
+  const probe = new Promise((resolve) => {
+    const sock = net.connect({ host: proxy.host, port: proxy.port });
+    let buf = Buffer.alloc(0);
+    let done = false;
+    const finish = (result) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      sock.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(null), timeout);
+
+    sock.once('error', () => finish(null));
+    sock.once('connect', () => {
+      // A SOCKS5 server answers a greeting with 0x05 <method>. Anything else
+      // (an HTTP proxy, a TLS terminator, a reset) is not SOCKS5.
+      sock.write(Buffer.from([0x05, 0x02, 0x00, 0x02]));
+    });
+    sock.on('data', (d) => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.length < 2) return;
+      if (buf[0] === 0x05 && buf[1] !== 0xff) return finish('socks5');
+      if (buf.slice(0, 5).toString('latin1').toUpperCase().startsWith('HTTP/')) return finish('http');
+      finish(null);
+    });
+    sock.once('end', () => finish(null));
+  }).then((r) => {
+    detected.set(key, r);
+    return r;
+  });
+
+  return probe;
+}
+
 function startBridge(proxy) {
   return new Promise((resolve, reject) => {
     const server = createBridgeServer(proxy);
@@ -269,4 +312,6 @@ process.on('exit', () => {
   for (const b of bridges.values()) { try { b.server.close(); } catch (_) {} }
 });
 
-module.exports = { playwrightProxy, needsBridge, socks5Connect, lastErrorFor, closeAll };
+module.exports = {
+  playwrightProxy, needsBridge, socks5Connect, detectScheme, lastErrorFor, closeAll,
+};

@@ -646,14 +646,16 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
               Protocol for lines without a prefix
             </label>
             <select id="proxy-scheme" class="btn btn-ghost small" style="padding:6px 10px">
+              <option value="auto">Auto-detect (recommended)</option>
               <option value="http">HTTP / HTTPS</option>
               <option value="socks5">SOCKS5</option>
               <option value="socks4">SOCKS4</option>
             </select>
           </div>
-          <p class="hint-text" style="margin-top:6px">Pick <code>SOCKS5</code> if your
-            <code>ip.txt</code> holds bare <code>ip:port:login:password</code> SOCKS5 proxies –
-            otherwise they are dialed as HTTP and reset the connection.</p>
+          <p class="hint-text" style="margin-top:6px">A bare
+            <code>ip:port:login:password</code> line says nothing about the protocol, so
+            <b>Auto-detect</b> asks each proxy what it is on first use. Only override this if
+            detection is blocked on your network.</p>
 
           <div class="proxy-status" id="proxy-status"></div>
 
