@@ -1,5 +1,6 @@
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
@@ -14,6 +15,15 @@ const STATE_FILE = path.join(__dirname, 'state.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
 const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?format=json';
+
+// Keep WebRTC from punching UDP straight out of the box and revealing the real
+// IP while every HTTP request goes through the proxy. Only applied to proxied
+// browsers – without a proxy there is nothing to leak past.
+const WEBRTC_ARGS = [
+  '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+  '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+  '--disable-features=WebRtcHideLocalIpsWithMdns',
+];
 
 const CLIENT_VERSION = '1.0.9165';
 const ELECTRON_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
@@ -45,6 +55,33 @@ function toDesktopSuperProperties(originalB64) {
 }
 
 const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
+
+// Browser profiles used to live in profiles/<line number>, so deleting or
+// reordering a line in tokens.txt silently gave an account another account's
+// cookies – logged in as one user while presenting a second user's session
+// through a third user's proxy. Key them by the token instead.
+function profileDirFor(token) {
+  return path.join(PROFILES_DIR,
+    crypto.createHash('sha256').update(String(token).trim()).digest('hex').slice(0, 16));
+}
+
+// One-time move of the old index-named directories onto token-based names. Only
+// safe while tokens.txt is still in the order the old code used, so it runs once
+// and leaves a marker behind.
+function migrateProfiles(tokens) {
+  const marker = path.join(PROFILES_DIR, '.keyed-by-token');
+  try {
+    if (!fs.existsSync(PROFILES_DIR) || fs.existsSync(marker)) return;
+    tokens.forEach((token, i) => {
+      const legacy = path.join(PROFILES_DIR, String(i));
+      const target = profileDirFor(token);
+      if (fs.existsSync(legacy) && !fs.existsSync(target)) {
+        try { fs.renameSync(legacy, target); } catch (_) {}
+      }
+    });
+    fs.writeFileSync(marker, 'profiles are keyed by token hash\n');
+  } catch (_) {}
+}
 
 function shortError(e) {
   return String(e && e.message ? e.message : e)
@@ -116,6 +153,8 @@ class Engine extends EventEmitter {
         .split('\n').map(t => t.trim()).filter(Boolean);
     } catch (_) {}
 
+    migrateProfiles(tokens);
+
     this.accounts = tokens.map((token, i) => {
       const id = String(i);
       const prev = this._history[id] ?? {};
@@ -124,6 +163,9 @@ class Engine extends EventEmitter {
         token,
         label: token.substring(0, 14) + '…',
         fingerprint: fingerprintFor(token),
+        // Keyed by the token, not by its line number: reordering tokens.txt must
+        // not hand an account someone else's cookies.
+        profileDir: profileDirFor(token),
         username: prev.username ?? null,
         globalName: prev.globalName ?? null,
         discordId: prev.discordId ?? null,
@@ -459,6 +501,10 @@ class Engine extends EventEmitter {
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        // WebRTC opens UDP sockets directly, bypassing the HTTP/SOCKS proxy and
+        // exposing the machine's real address – the page would then be talking
+        // from a different IP than every other request in the context.
+        ...(proxied ? WEBRTC_ARGS : []),
       ],
     });
     this._browsers[key] = browser;
@@ -491,7 +537,11 @@ class Engine extends EventEmitter {
     if (!acc) return;
     const ctx = acc._context;
     acc._context = null;
-    if (ctx) { try { await ctx.close(); } catch (_) {} }
+    if (ctx) {
+      // Keep whatever verification this session already passed.
+      await this._saveSession(acc, ctx, acc.profileDir || profileDirFor(acc.token));
+      try { await ctx.close(); } catch (_) {}
+    }
     this._push(acc, { status: 'stopped', message: 'Stopped manually' });
   }
 
@@ -560,7 +610,7 @@ class Engine extends EventEmitter {
     await this._resolveScheme(proxy);
     const browser = await this._ensureBrowser(!!proxy);
 
-    const profileDir = path.join(PROFILES_DIR, acc.id);
+    const profileDir = acc.profileDir || profileDirFor(acc.token);
     fs.mkdirSync(profileDir, { recursive: true });
 
     const fp = acc.fingerprint || fingerprintFor(acc.token);
@@ -646,20 +696,30 @@ class Engine extends EventEmitter {
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       const result = await page.evaluate(INJECT_SCRIPT);
 
-      try { await context.storageState({ path: path.join(profileDir, 'state.json') }); } catch (_) {}
-
       if (result?.fatal) {
         this._push(acc, { status: 'error', message: result.fatal });
       } else if (acc.status === 'running') {
         this._push(acc, { status: 'done', message: 'Finished' });
       }
     } finally {
+      // Save unconditionally, before closing. The runs worth persisting are the
+      // ones that did NOT finish cleanly – a CAPTCHA you just solved by hand, or
+      // an account stopped mid-quest. Saving only on success threw exactly those
+      // sessions away and asked for the CAPTCHA again on the next run.
+      await this._saveSession(acc, context, profileDir);
       if (acc._context === context) {
         acc._context = null;
         try { await context.close(); } catch (_) {}
       }
       this._saveState();
     }
+  }
+
+  async _saveSession(acc, context, profileDir) {
+    try {
+      fs.mkdirSync(profileDir, { recursive: true });
+      await context.storageState({ path: path.join(profileDir, 'state.json') });
+    } catch (_) {}
   }
 
   _onReport(acc, ev) {

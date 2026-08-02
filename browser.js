@@ -416,6 +416,13 @@ async function main() {
       '--disable-background-timer-throttling',
       '--disable-backgrounding-occluded-windows',
       '--disable-renderer-backgrounding',
+      // Without these WebRTC opens UDP sockets outside the proxy and leaks the
+      // machine's real IP while every request goes through the proxy.
+      ...(proxyList.length ? [
+        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--webrtc-ip-handling-policy=disable_non_proxied_udp',
+        '--disable-features=WebRtcHideLocalIpsWithMdns',
+      ] : []),
     ]
   });
 

@@ -220,6 +220,41 @@ function restoreTokens() {
       'nieznany schemat musi wrócić do http');
   });
 
+  await test('profil przeglądarki jest przypisany do tokenu, nie do numeru linii', async () => {
+    const e = new Engine();
+    const a = e.accounts[0].profileDir;
+    const b = e.accounts[1].profileDir;
+    assert.notStrictEqual(a, b, 'każde konto musi mieć własny katalog profilu');
+
+    // Zamiana kolejności w tokens.txt nie może przenieść ciasteczek na inne konto.
+    fs.writeFileSync(TOKENS, 'cccc3333dddd4444\naaaa1111bbbb2222\n');
+    e.loadTokens();
+    assert.strictEqual(e.accounts[0].profileDir, b,
+      'po zamianie kolejności profil musi iść za tokenem');
+    assert.strictEqual(e.accounts[1].profileDir, a);
+    setupTokens();
+  });
+
+  await test('sesja jest zapisywana także gdy przebieg się nie powiódł', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
+    const inner = src.match(/async _runInner\(acc\)[\s\S]*?\n  \}/);
+    assert.ok(inner, 'nie znaleziono _runInner');
+    const fin = inner[0].slice(inner[0].lastIndexOf('} finally {'));
+    assert.ok(/_saveSession\(/.test(fin),
+      'sesja musi być zapisana w bloku finally – inaczej captcha rozwiązana ręcznie '
+      + 'przepada przy błędzie i pojawia się ponownie');
+    assert.ok(/_saveSession\(/.test(src.match(/async stop\(id\)[\s\S]*?\n  \}/)[0]),
+      'zatrzymanie konta też musi zachować sesję');
+  });
+
+  await test('WebRTC nie wycieka prawdziwego IP poza proxy', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
+    assert.ok(src.includes('disable_non_proxied_udp'),
+      'brak polityki WebRTC – UDP omija proxy i zdradza prawdziwy adres');
+    assert.ok(/proxied \? WEBRTC_ARGS : \[\]/.test(src),
+      'flagi WebRTC mają być stosowane dla przeglądarki z proxy');
+  });
+
   await test('goła linia ip:port:login:hasło jest oznaczona do wykrycia protokołu', async () => {
     const { parseLine } = require('./proxies.js');
     const auto = parseLine('83.97.117.98:1080:bob:pass');
