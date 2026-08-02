@@ -1,9 +1,3 @@
-/**
- * Control panel – http://localhost:3000
- *
- * No external dependencies besides playwright: plain http + SSE.
- */
-
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
@@ -12,12 +6,10 @@ const { Engine } = require('./engine.js');
 const PORT = parseInt(process.env.PORT || '3000', 10);
 const engine = new Engine();
 
-// ── SSE clients ──────────────────────────────────────────────────────────────
 const clients = new Set();
 
 let pending = false;
 engine.on('update', () => {
-  // Coalesce bursts of events into one send every ~200 ms
   if (pending) return;
   pending = true;
   setTimeout(() => {
@@ -29,7 +21,6 @@ engine.on('update', () => {
   }, 200);
 });
 
-// ── Helpers ──────────────────────────────────────────────────────────────
 const json = (res, code, obj) => {
   res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8' });
   res.end(JSON.stringify(obj));
@@ -41,12 +32,10 @@ const readBody = (req) => new Promise(resolve => {
   req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (_) { resolve({}); } });
 });
 
-// ── Server ──────────────────────────────────────────────────────────────────
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://localhost');
   const p = url.pathname;
 
-  // Panel page
   if (p === '/' || p === '/index.html') {
     const file = path.join(__dirname, 'public', 'dashboard.html');
     fs.readFile(file, (err, data) => {
@@ -57,7 +46,6 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // State stream
   if (p === '/api/stream') {
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
@@ -72,27 +60,19 @@ const server = http.createServer(async (req, res) => {
 
   if (p === '/api/state') return json(res, 200, engine.snapshot());
 
-  // Actions
   if (req.method === 'POST') {
     const body = await readBody(req);
     try {
       switch (p) {
-        // Full token is never part of the SSE snapshot (only the masked
-        // label is) – this is the one place it's returned, on demand, for
-        // the "Copy token" action in the Accounts view.
         case '/api/token':
           return json(res, 200, { token: engine.getToken(body.id) });
 
-        // Same deal as the token: proxy credentials stay out of the snapshot
-        // and are handed over only for an explicit copy action.
         case '/api/proxy-url':
           return json(res, 200, { url: engine.getProxyUrl(body.id) });
 
         case '/api/proxy-test':
           return json(res, 200, { ip: await engine.testProxy(body.id) });
 
-        // Kicks the run off and answers straight away – progress reaches the
-        // panel through the state stream.
         case '/api/proxy-test-all':
           return json(res, 200, { ok: true, total: engine.testAllProxies().total });
 
@@ -176,7 +156,6 @@ server.listen(PORT, () => {
   console.log('');
 });
 
-// Cleanup
 const shutdown = async () => {
   console.log('\nStopping…');
   try { await engine.stopAll(); } catch (_) {}
