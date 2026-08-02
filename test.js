@@ -20,7 +20,9 @@ async function test(name, fn) {
 }
 
 function setupTokens() {
-  if (fs.existsSync(TOKENS)) fs.copyFileSync(TOKENS, BACKUP);
+  // Only ever back up once. Calling this again mid-run would copy the test
+  // content over the backup and destroy the real tokens.txt on restore.
+  if (fs.existsSync(TOKENS) && !fs.existsSync(BACKUP)) fs.copyFileSync(TOKENS, BACKUP);
   fs.writeFileSync(TOKENS, 'aaaa1111bbbb2222\ncccc3333dddd4444\n');
 }
 function restoreTokens() {
@@ -232,7 +234,9 @@ function restoreTokens() {
     assert.strictEqual(e.accounts[0].profileDir, b,
       'po zamianie kolejności profil musi iść za tokenem');
     assert.strictEqual(e.accounts[1].profileDir, a);
-    setupTokens();
+    // Przywróć zawartość testową wprost. Ponowne setupTokens() nadpisałoby
+    // kopię zapasową danymi testowymi i skasowało prawdziwy tokens.txt.
+    fs.writeFileSync(TOKENS, 'aaaa1111bbbb2222\ncccc3333dddd4444\n');
   });
 
   await test('sesja jest zapisywana także gdy przebieg się nie powiódł', async () => {
