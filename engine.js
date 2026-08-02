@@ -1,10 +1,3 @@
-/**
- * Engine that manages Discord accounts.
- *
- * Keeps each account's state in memory, starts/stops accounts independently,
- * and receives live progress from the injected script through exposeFunction.
- */
-
 const fs = require('fs');
 const path = require('path');
 const { EventEmitter } = require('events');
@@ -17,24 +10,12 @@ const STATE_FILE = path.join(__dirname, 'state.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36';
-
-// What a proxy is asked for when checking its exit IP. Override with
-// PROXY_CHECK_URL if ipify is blocked or rate limited where you are; any
-// endpoint answering {"ip": "..."} will do.
 const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?format=json';
 
 const CLIENT_VERSION = '1.0.9165';
 const ELECTRON_UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
   + '(KHTML, like Gecko) discord/' + CLIENT_VERSION
   + ' Chrome/128.0.6613.186 Electron/32.2.7 Safari/537.36';
-
-/**
- * Replaces only the client-identity fields in the X-Super-Properties header,
- * keeping everything else intact – most importantly client_build_number.
- *
- * Building this header from scratch is a trap: with a stale build number
- * Discord stops returning any quests at all.
- */
 function toDesktopSuperProperties(originalB64) {
   if (!originalB64) return null;
   let props;
@@ -46,7 +27,7 @@ function toDesktopSuperProperties(originalB64) {
   if (!props || typeof props !== 'object') return null;
 
   return Buffer.from(JSON.stringify({
-    ...props,                       // client_build_number etc. stay current
+    ...props,                       
     os: 'Windows',
     browser: 'Discord Client',
     release_channel: props.release_channel ?? 'stable',
@@ -60,18 +41,12 @@ function toDesktopSuperProperties(originalB64) {
   })).toString('base64');
 }
 
-/**
- * Playwright errors carry a multi-line call log and ANSI colours – neither
- * belongs in a toast or a log line.
- */
 const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
 
 function shortError(e) {
   return String(e && e.message ? e.message : e)
     .replace(ANSI, '')
     .split('\n')[0]
-    // "apiRequestContext.get: connect ECONNREFUSED …" – the Playwright call
-    // name means nothing to someone looking at a proxy list.
     .replace(/^apiRequestContext\.\w+:\s*/, '')
     .trim();
 }
@@ -80,8 +55,6 @@ class Engine extends EventEmitter {
   constructor() {
     super();
     this.accounts = [];
-    // One browser process per proxy mode: Chromium only honours a
-    // per-context proxy when the browser itself was launched with one.
     this._browsers = { plain: null, proxied: null };
     this.concurrency = parseInt(process.env.CONCURRENCY || '5', 10);
     this.headless = process.env.HEADLESS !== 'false';
@@ -96,7 +69,6 @@ class Engine extends EventEmitter {
     this.loadTokens();
   }
 
-  // ── Persistent state (running totals across restarts) ──────────────────────
   _loadState() {
     try {
       const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
@@ -116,7 +88,6 @@ class Engine extends EventEmitter {
     } catch (_) {}
   }
 
-  // ── Tokens ───────────────────────────────────────────────────────────────
   loadTokens() {
     let tokens = [];
     try {
@@ -136,14 +107,14 @@ class Engine extends EventEmitter {
         discordId: prev.discordId ?? null,
         avatar: prev.avatar ?? null,
         email: prev.email ?? null,
-        status: 'idle',          // idle | starting | running | done | error | stopped
+        status: 'idle',
         message: '',
-        quests: [],              // { id, name, task, target, done, orbs, state }
+        quests: [],
         questsDone: prev.questsDone ?? 0,
         orbs: prev.orbs ?? 0,
         logs: [],
         needsCaptcha: false,
-        proxy: null,             // filled in by _assignProxies()
+        proxy: null,
         proxyIp: prev.proxyIp ?? null,
         proxyError: null,
         _context: null,
@@ -153,17 +124,14 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  /** Full token for a given account id – used only by the copy-token action. */
   getToken(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('No such account: ' + id);
     return acc.token;
   }
 
-  // ── Proxies ──────────────────────────────────────────────────────────────
   loadProxies() {
     this.proxyList = loadProxies();
-    // Old results describe proxies that may no longer be in the file.
     if (!this.proxyTest.running) {
       this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
     }
@@ -171,17 +139,11 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  /**
-   * Account #n gets proxy #n. With fewer proxies than accounts the list wraps
-   * around – accounts then share an exit IP, which is exactly what the panel
-   * warns about, since avoiding that is the whole point of the feature.
-   */
   _assignProxies() {
     const list = this.proxyList.proxies;
     const on = this.useProxies && list.length > 0;
     this.accounts.forEach((acc, i) => {
-      const next = on ? list[i % list.length] : null;
-      // A different proxy means the previously measured exit IP is stale.
+      const next = on ? list[i % list.length] : null
       if (!acc.proxy || !next || acc.proxy.server !== next.server) {
         acc.proxyIp = null;
         acc.proxyError = null;
@@ -197,7 +159,6 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  /** Full proxy URL (with credentials) for one account – copy action only. */
   getProxyUrl(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('No such account: ' + id);
@@ -205,10 +166,6 @@ class Engine extends EventEmitter {
     return proxyUrl(acc.proxy);
   }
 
-  /**
-   * Dials one proxy and returns the exit IP it gives us. Deliberately
-   * independent of any account, so a whole ip.txt can be checked at once.
-   */
   async _probeProxy(proxy, timeout = 20000) {
     let request;
     try {
@@ -234,7 +191,6 @@ class Engine extends EventEmitter {
     }
   }
 
-  /** Writes a probe result onto every account that uses this proxy. */
   _applyProbe(proxy, ip, error) {
     for (const acc of this.accounts) {
       if (!acc.proxy || acc.proxy.server !== proxy.server) continue;
@@ -246,11 +202,6 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  /**
-   * Reads name, e-mail and avatar for one account without launching a page.
-   * Uses the account's own proxy, so it neither leaks the real IP nor stacks
-   * every account's request on one address.
-   */
   async refreshIdentity(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('No such account: ' + id);
@@ -277,7 +228,6 @@ class Engine extends EventEmitter {
     }
   }
 
-  /** Same for every account – one request each, a few at a time. */
   async refreshAllIdentities() {
     const queue = this.accounts.slice();
     let next = 0;
@@ -291,7 +241,6 @@ class Engine extends EventEmitter {
     return this.accounts.filter(a => a.username).length;
   }
 
-  /** Sends one request through the account's proxy and reports the exit IP. */
   async testProxy(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('No such account: ' + id);
@@ -308,13 +257,6 @@ class Engine extends EventEmitter {
     }
   }
 
-  /**
-   * Checks every entry in ip.txt. Free and scraped proxy lists are mostly
-   * dead on arrival, so weeding them out in one pass is the difference
-   * between a usable list and a pile of failed logins.
-   *
-   * Returns immediately – progress arrives through the normal state stream.
-   */
   testAllProxies() {
     if (this.proxyTest.running) return this.proxyTest;
     const list = this.proxyList.proxies;
@@ -344,7 +286,6 @@ class Engine extends EventEmitter {
       }
     };
 
-    // A dead proxy costs a full timeout, so check several at a time.
     const workers = Array.from({ length: Math.min(8, list.length) }, worker);
     Promise.all(workers).finally(() => {
       this.proxyTest.running = false;
@@ -355,7 +296,6 @@ class Engine extends EventEmitter {
     return this.proxyTest;
   }
 
-  // ── View for the panel (no tokens or browser handles) ──────────────────────
   snapshot() {
     return {
       totals: this.totals,
@@ -369,8 +309,6 @@ class Engine extends EventEmitter {
         fileExists: this.proxyList.exists,
         fileName: path.basename(this.proxyList.file),
         errors: this.proxyList.errors,
-        // Distinct exit IPs would be ideal; distinct entries is what we can
-        // know without dialing every proxy.
         shared: this.useProxies && this.proxyList.proxies.length > 0
           && this.accounts.length > this.proxyList.proxies.length,
         test: this.proxyTest,
@@ -388,7 +326,6 @@ class Engine extends EventEmitter {
           email: a.email,
           status: a.status,
           message: a.message,
-          // Label only – the panel never receives proxy credentials.
           proxy: a.proxy ? { label: a.proxy.label, scheme: a.proxy.scheme, auth: a.proxy.auth } : null,
           proxyIp: a.proxyIp,
           proxyError: a.proxyError,
@@ -410,22 +347,12 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  /** Identity survives restarts, so the list is readable before anything runs. */
   _setIdentity(acc, id) {
     this._push(acc, id);
     this._history[acc.id] = { ...(this._history[acc.id] ?? {}), ...id };
     this._saveState();
   }
 
-  /**
-   * Asks Discord who this token belongs to.
-   *
-   * Reading it out of the client's own stores only works once the whole app
-   * has booted and the webpack module shapes still match, which is exactly
-   * the thing that quietly breaks. One documented request costs nothing and
-   * fills the account list even for accounts that never get as far as
-   * loading Discord.
-   */
   async _fetchIdentity(acc, context) {
     try {
       const res = await context.request.get('https://discord.com/api/v9/users/@me', {
@@ -458,19 +385,11 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Shared browsers ─────────────────────────────────────────────────────
-  /**
-   * Chromium ignores a per-context proxy unless the browser was launched with
-   * one, so proxied and direct accounts get separate browser processes. The
-   * launch-level server is a placeholder – every context overrides it.
-   */
   async _ensureBrowser(proxied) {
     const key = proxied ? 'proxied' : 'plain';
     const current = this._browsers[key];
     if (current && current.isConnected()) return current;
 
-    // Import lazily – the panel should still run even before playwright is
-    // installed, so it can show a readable message instead of crashing.
     let chromium;
     try {
       ({ chromium } = require('playwright'));
@@ -494,10 +413,6 @@ class Engine extends EventEmitter {
     return browser;
   }
 
-  /**
-   * Settings like headless or the proxy toggle only take effect on launch, so
-   * drop idle browsers to let the next start pick the new settings up.
-   */
   _closeIdleBrowsers() {
     if (this.accounts.some(a => a._running || a._context)) return;
     for (const key of Object.keys(this._browsers)) {
@@ -507,7 +422,6 @@ class Engine extends EventEmitter {
     }
   }
 
-  // ── Control ──────────────────────────────────────────────────────────────
   async start(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) throw new Error('No such account: ' + id);
@@ -577,10 +491,7 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
-  // ── Actual work for one account ─────────────────────────────────────────
   async _run(acc) {
-    // The only real guard: the panel's status can be stale due to a race
-    // between /api/start and /api/start-all, so we check again here.
     if (acc._running) return;
     acc._running = true;
 
@@ -595,20 +506,14 @@ class Engine extends EventEmitter {
     const proxy = acc.proxy;
     const browser = await this._ensureBrowser(!!proxy);
 
-    // Persistent profile = a CAPTCHA solved once stays solved
     const profileDir = path.join(PROFILES_DIR, acc.id);
     fs.mkdirSync(profileDir, { recursive: true });
 
     const context = await browser.newContext({
-      // Discord rejects game-quest heartbeats with 401 unless the User-Agent
-      // contains an Electron version. The header itself decides this, not
-      // just X-Super-Properties.
       userAgent: this.desktopMode ? ELECTRON_UA : UA,
       locale: 'pl-PL',
       timezoneId: 'Europe/Warsaw',
       viewport: { width: 1280, height: 800 },
-      // Every account leaves through its own IP – this is what keeps Discord
-      // from rate limiting (429) the whole batch at once.
       proxy: proxy ? {
         server: proxy.server,
         username: proxy.username ?? undefined,
@@ -621,8 +526,6 @@ class Engine extends EventEmitter {
     acc._context = context;
 
     try {
-      // Confirm the exit IP before touching Discord: a dead proxy should be
-      // reported as such instead of looking like a login failure.
       if (proxy) {
         this._push(acc, { message: `Connecting through ${proxy.label}…` });
         try {
@@ -640,10 +543,6 @@ class Engine extends EventEmitter {
         }
       }
 
-      // Desktop mode: spoofs the session as the desktop client, which is a
-      // prerequisite for PLAY_ON_DESKTOP quests to accrue. Off by default
-      // because it touches the headers that fetching the quest list itself
-      // depends on.
       if (this.desktopMode) {
         await context.route('**/api/v*/**', async (route) => {
           try {
@@ -658,8 +557,6 @@ class Engine extends EventEmitter {
         });
       }
 
-      // Before the slow part: fills in the name, e-mail and avatar right away
-      // and catches a dead token without waiting for a full Discord load.
       this._push(acc, { message: 'Checking the account…' });
       await this._fetchIdentity(acc, context);
 
@@ -667,7 +564,6 @@ class Engine extends EventEmitter {
       page.setDefaultTimeout(0);
       page.on('dialog', d => d.dismiss().catch(() => {}));
 
-      // Receive reports from the injected script
       await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
 
       this._push(acc, { status: 'running', message: 'Logging in…' });
@@ -692,7 +588,6 @@ class Engine extends EventEmitter {
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       const result = await page.evaluate(INJECT_SCRIPT);
 
-      // Save the session so the next start doesn't need re-verification
       try { await context.storageState({ path: path.join(profileDir, 'state.json') }); } catch (_) {}
 
       if (result?.fatal) {
@@ -709,7 +604,6 @@ class Engine extends EventEmitter {
     }
   }
 
-  // ── Events from the browser ──────────────────────────────────────────────
   _onReport(acc, ev) {
     if (!ev || typeof ev !== 'object') return;
 
@@ -734,7 +628,6 @@ class Engine extends EventEmitter {
         break;
 
       case 'quests':
-        // Preserve the state of quests already completed in this session
         {
           const prev = new Map(acc.quests.map(q => [q.id, q]));
           acc.quests = (ev.list ?? []).map(q => {
@@ -780,8 +673,6 @@ class Engine extends EventEmitter {
       }
 
       case 'qretry': {
-        // Parked, not failed – the injected script already logged why, so
-        // this only moves the quest back to a waiting state in the panel.
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) {
           q.state = 'waiting';
@@ -800,9 +691,6 @@ class Engine extends EventEmitter {
         if (ev.captcha) this._push(acc, { needsCaptcha: true });
         this._log(acc, 'Error: ' + ev.err);
 
-        // Discord refuses to track game-type quests for the web client.
-        // Desktop mode spoofs the session as the app and is the only way
-        // to get these quests moving at all – worth flagging it.
         const isGameTask = q && ['PLAY_ON_DESKTOP', 'STREAM_ON_DESKTOP'].includes(q.task);
         const unauthorized = /autoryz|unauthorized|401/i.test(String(ev.err));
         if (isGameTask && unauthorized && !this.desktopMode && !acc._desktopHintShown) {
