@@ -660,10 +660,14 @@ user:pass@host:port
 host:port@user:pass          (Webshare's list designer default)
 user:pass:host:port
 http://user:pass@host:port
-socks5://host:port</pre>
-          <p class="hint-text">No scheme means HTTP. Chromium cannot authenticate to SOCKS
-            proxies, so use HTTP proxies whenever a login is required. Lines starting with
-            <code>#</code> are ignored.</p>
+socks5://host:port
+socks5://user:pass@host:port
+socks5://host:port:user:pass</pre>
+          <p class="hint-text">No scheme means HTTP. For SOCKS5 add the <code>socks5://</code>
+            prefix – a bare <code>host:port:user:pass</code> line is read as HTTP and a real
+            SOCKS5 proxy will just reset the connection (<code>ECONNRESET</code>).
+            Authenticated SOCKS5 now works: each one is routed through a local bridge that
+            handles the login Chromium can't. Lines starting with <code>#</code> are ignored.</p>
 
           <div class="rail-label tight" style="margin-top:26px">WHERE TO GET PROXIES</div>
           <p class="hint-text">Discord treats datacenter IP ranges with suspicion, so

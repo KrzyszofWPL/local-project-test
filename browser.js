@@ -3,6 +3,8 @@ const fs = require('fs');
 const path = require('path');
 
 const { loadProxies } = require('./proxies.js');
+const { playwrightProxy, closeAll: closeBridges } = require('./socks-bridge.js');
+const { fingerprintFor, initScript } = require('./fingerprint.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || '5', 10);
@@ -251,7 +253,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
 
   return { results, logs };
 })()`;
-────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 async function runPool(items, limit, fn) {
   const results = new Array(items.length);
   let idx = 0;
@@ -264,23 +266,23 @@ async function runPool(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
-───────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────
 async function processToken(browser, token, index, total, proxy) {
   const tag = `[${String(index + 1).padStart(2)}/${total}] ${token.substring(0, 12)}...`;
   const log = (...a) => console.log(tag, ...a);
 
   log('→ opening context' + (proxy ? ' via ' + proxy.label : ''));
+  const fp = fingerprintFor(token);
   const context = await browser.newContext({
-    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36',
-    locale: 'pl-PL',
-    timezoneId: 'Europe/Warsaw',
-    viewport: { width: 1280, height: 800 },
-    proxy: proxy ? {
-      server: proxy.server,
-      username: proxy.username ?? undefined,
-      password: proxy.password ?? undefined,
-    } : undefined,
+    userAgent: fp.userAgent,
+    locale: fp.locale,
+    timezoneId: fp.timezoneId,
+    viewport: fp.viewport,
+    screen: fp.screen,
+    deviceScaleFactor: fp.deviceScaleFactor,
+    proxy: await playwrightProxy(proxy),
   });
+  try { await context.addInitScript(initScript(fp)); } catch (_) {}
 
   const page = await context.newPage();
   page.on('dialog', d => d.dismiss().catch(() => {}));
@@ -425,6 +427,7 @@ async function main() {
     );
   } finally {
     await browser.close();
+    await closeBridges().catch(() => {});
   }
 
   console.log('\n[DONE] All accounts processed.');

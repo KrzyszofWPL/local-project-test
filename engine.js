@@ -4,12 +4,13 @@ const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
 const { loadProxies, proxyUrl, PROXY_FILE } = require('./proxies.js');
+const { playwrightProxy, closeAll: closeBridges } = require('./socks-bridge.js');
+const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
 const PROFILES_DIR = path.join(__dirname, 'profiles');
 
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36';
 const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?format=json';
 
 const CLIENT_VERSION = '1.0.9165';
@@ -102,6 +103,7 @@ class Engine extends EventEmitter {
         id,
         token,
         label: token.substring(0, 14) + '…',
+        fingerprint: fingerprintFor(token),
         username: prev.username ?? null,
         globalName: prev.globalName ?? null,
         discordId: prev.discordId ?? null,
@@ -175,11 +177,7 @@ class Engine extends EventEmitter {
     }
 
     const ctx = await request.newContext({
-      proxy: {
-        server: proxy.server,
-        username: proxy.username ?? undefined,
-        password: proxy.password ?? undefined,
-      },
+      proxy: await playwrightProxy(proxy),
       timeout,
     });
     try {
@@ -214,11 +212,7 @@ class Engine extends EventEmitter {
     }
 
     const api = await request.newContext({
-      proxy: acc.proxy ? {
-        server: acc.proxy.server,
-        username: acc.proxy.username ?? undefined,
-        password: acc.proxy.password ?? undefined,
-      } : undefined,
+      proxy: await playwrightProxy(acc.proxy),
       timeout: 20000,
     });
     try {
@@ -327,6 +321,7 @@ class Engine extends EventEmitter {
           status: a.status,
           message: a.message,
           proxy: a.proxy ? { label: a.proxy.label, scheme: a.proxy.scheme, auth: a.proxy.auth } : null,
+          fingerprint: a.fingerprint ? fingerprintLabel(a.fingerprint) : null,
           proxyIp: a.proxyIp,
           proxyError: a.proxyError,
           needsCaptcha: a.needsCaptcha,
@@ -468,6 +463,7 @@ class Engine extends EventEmitter {
       this._browsers[key] = null;
       if (b) { try { await b.close(); } catch (_) {} }
     }
+    await closeBridges().catch(() => {});
   }
 
   setConcurrency(n) {
@@ -509,21 +505,25 @@ class Engine extends EventEmitter {
     const profileDir = path.join(PROFILES_DIR, acc.id);
     fs.mkdirSync(profileDir, { recursive: true });
 
+    const fp = acc.fingerprint || fingerprintFor(acc.token);
+
     const context = await browser.newContext({
-      userAgent: this.desktopMode ? ELECTRON_UA : UA,
-      locale: 'pl-PL',
-      timezoneId: 'Europe/Warsaw',
-      viewport: { width: 1280, height: 800 },
-      proxy: proxy ? {
-        server: proxy.server,
-        username: proxy.username ?? undefined,
-        password: proxy.password ?? undefined,
-      } : undefined,
+      userAgent: this.desktopMode ? ELECTRON_UA : fp.userAgent,
+      locale: fp.locale,
+      timezoneId: fp.timezoneId,
+      viewport: fp.viewport,
+      screen: fp.screen,
+      deviceScaleFactor: fp.deviceScaleFactor,
+      proxy: await playwrightProxy(proxy),
       storageState: fs.existsSync(path.join(profileDir, 'state.json'))
         ? path.join(profileDir, 'state.json')
         : undefined,
     });
     acc._context = context;
+
+    // Line the JS-visible fingerprint up with the context options before any
+    // Discord script runs.
+    try { await context.addInitScript(initScript(fp)); } catch (_) {}
 
     try {
       if (proxy) {

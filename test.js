@@ -100,7 +100,7 @@ function restoreTokens() {
       'User-Agent musi zawierać wersję Electrona – bez niej Discord odrzuca '
       + 'heartbeaty questów-gier błędem 401');
 
-    assert.ok(s.includes('this.desktopMode ? ELECTRON_UA : UA'),
+    assert.ok(/this\.desktopMode \? ELECTRON_UA :/.test(s),
       'kontekst przeglądarki musi używać Electron UA w trybie desktop');
     assert.ok(s.includes("headers['user-agent'] = ELECTRON_UA"),
       'żądania do API muszą mieć nadpisany User-Agent, nie tylko super properties');
@@ -178,6 +178,51 @@ function restoreTokens() {
     const m = html.match(/<script>([\s\S]*?)<\/script>/);
     assert.ok(m, 'brak sekcji <script> w panelu');
     require('vm').compileFunction(m[1]);
+  });
+
+  await test('fingerprint jest stały dla tokenu i różny między tokenami', async () => {
+    const { fingerprintFor } = require('./fingerprint.js');
+    const a = fingerprintFor('token-AAA');
+    const b = fingerprintFor('token-AAA');
+    const c = fingerprintFor('token-BBB');
+    assert.deepStrictEqual(a, b, 'ten sam token musi dawać ten sam fingerprint (stabilność między uruchomieniami)');
+    assert.notStrictEqual(JSON.stringify(a), JSON.stringify(c),
+      'różne tokeny muszą mieć różne fingerprinty');
+  });
+
+  await test('init-script fingerprintu jest poprawnym JS-em i łata WebGL', async () => {
+    const { fingerprintFor, initScript } = require('./fingerprint.js');
+    const src = initScript(fingerprintFor('token-AAA'));
+    require('vm').compileFunction(src);
+    assert.ok(/37445|37446/.test(src), 'init-script musi nadpisywać WebGL vendor/renderer');
+    assert.ok(src.includes('hardwareConcurrency'), 'init-script musi nadpisywać liczbę rdzeni');
+  });
+
+  await test('proxy SOCKS5 jest kierowane przez lokalny mostek (nie wprost)', async () => {
+    const net = require('net');
+    const { parseLine } = require('./proxies.js');
+    const { playwrightProxy, closeAll } = require('./socks-bridge.js');
+
+    // Mostek jest tworzony leniwie – potrzebny jest osiągalny host SOCKS.
+    const stub = net.createServer(() => {});
+    await new Promise(r => stub.listen(0, '127.0.0.1', r));
+    const port = stub.address().port;
+
+    const socks = parseLine(`socks5://127.0.0.1:${port}:bob:s3cret`);
+    const pw = await playwrightProxy(socks);
+    assert.ok(/^http:\/\/127\.0\.0\.1:\d+$/.test(pw.server),
+      'SOCKS5 musi trafić do lokalnego mostka http://127.0.0.1:*, dostałem: ' + pw.server);
+    assert.strictEqual(pw.username, undefined,
+      'dane logowania nie mogą wyciekać do Chromium – trzyma je mostek');
+
+    const http = parseLine('http://u:p@1.2.3.4:8080');
+    const pwHttp = await playwrightProxy(http);
+    assert.strictEqual(pwHttp.server, 'http://1.2.3.4:8080',
+      'proxy HTTP musi iść wprost do Chromium (Chromium obsługuje jego autoryzację)');
+    assert.strictEqual(pwHttp.username, 'u', 'login proxy HTTP musi być zachowany');
+
+    await closeAll();
+    stub.close();
   });
 
   restoreTokens();
