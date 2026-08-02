@@ -198,6 +198,28 @@ function restoreTokens() {
     assert.ok(src.includes('hardwareConcurrency'), 'init-script musi nadpisywać liczbę rdzeni');
   });
 
+  await test('domyślny protokół zamienia goły ip:port:login:hasło na SOCKS5', async () => {
+    const { parseLine } = require('./proxies.js');
+    // Bez prefiksu i bez domyślnego schematu → HTTP (dotychczasowe zachowanie).
+    assert.strictEqual(parseLine('83.97.117.98:1080:bob:pass').scheme, 'http');
+    // Z domyślnym schematem socks5 ten sam wpis staje się SOCKS5…
+    const p = parseLine('83.97.117.98:1080:bob:pass', 'socks5');
+    assert.strictEqual(p.scheme, 'socks5');
+    assert.strictEqual(p.username, 'bob');
+    // …ale jawny prefiks na linii zawsze wygrywa z domyślnym.
+    assert.strictEqual(parseLine('http://1.2.3.4:8080', 'socks5').scheme, 'http');
+  });
+
+  await test('ustawienie domyślnego protokołu przeładowuje listę proxy', async () => {
+    const e = new Engine();
+    const applied = e.setDefaultProxyScheme('socks5');
+    assert.strictEqual(applied, 'socks5', 'setter musi zwrócić znormalizowany schemat');
+    assert.strictEqual(e.snapshot().proxies.defaultScheme, 'socks5',
+      'panel musi widzieć wybrany domyślny protokół');
+    assert.strictEqual(e.setDefaultProxyScheme('bzdura'), 'http',
+      'nieznany schemat musi wrócić do http');
+  });
+
   await test('proxy SOCKS5 jest kierowane przez lokalny mostek (nie wprost)', async () => {
     const net = require('net');
     const { parseLine } = require('./proxies.js');

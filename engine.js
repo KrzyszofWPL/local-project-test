@@ -3,7 +3,7 @@ const path = require('path');
 const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
-const { loadProxies, proxyUrl, PROXY_FILE } = require('./proxies.js');
+const { loadProxies, proxyUrl, normalizeScheme, PROXY_FILE } = require('./proxies.js');
 const { playwrightProxy, closeAll: closeBridges } = require('./socks-bridge.js');
 const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
 
@@ -62,6 +62,10 @@ class Engine extends EventEmitter {
     this.desktopMode = process.env.DESKTOP_MODE === 'true';
     this.onlyOrbs = process.env.ONLY_ORBS !== 'false';
     this.useProxies = process.env.USE_PROXIES !== 'false';
+    // Protocol used for ip.txt lines that have no `scheme://` prefix (e.g. the
+    // bare `ip:port:user:pass` template). Persisted UI choice wins over the env
+    // default. SOCKS5 here makes an unprefixed list route through the bridge.
+    this.defaultProxyScheme = normalizeScheme(process.env.PROXY_SCHEME || 'http');
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this.proxyList = { file: PROXY_FILE, exists: false, proxies: [], errors: [] };
     this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
@@ -75,6 +79,9 @@ class Engine extends EventEmitter {
       const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
       this.totals = { questsCompleted: 0, orbsEarned: 0, ...s.totals };
       this._history = s.history ?? {};
+      if (s.settings && s.settings.defaultProxyScheme) {
+        this.defaultProxyScheme = normalizeScheme(s.settings.defaultProxyScheme);
+      }
     } catch (_) {
       this._history = {};
     }
@@ -85,6 +92,7 @@ class Engine extends EventEmitter {
       fs.writeFileSync(STATE_FILE, JSON.stringify({
         totals: this.totals,
         history: this._history,
+        settings: { defaultProxyScheme: this.defaultProxyScheme },
       }, null, 2));
     } catch (_) {}
   }
@@ -133,7 +141,7 @@ class Engine extends EventEmitter {
   }
 
   loadProxies() {
-    this.proxyList = loadProxies();
+    this.proxyList = loadProxies(PROXY_FILE, this.defaultProxyScheme);
     if (!this.proxyTest.running) {
       this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
     }
@@ -159,6 +167,15 @@ class Engine extends EventEmitter {
     this._assignProxies();
     this._closeIdleBrowsers();
     this.emit('update');
+  }
+
+  setDefaultProxyScheme(v) {
+    this.defaultProxyScheme = normalizeScheme(v);
+    this._saveState();
+    this.loadProxies();          // re-parse ip.txt under the new default
+    this._closeIdleBrowsers();
+    this.emit('update');
+    return this.defaultProxyScheme;
   }
 
   getProxyUrl(id) {
@@ -299,6 +316,7 @@ class Engine extends EventEmitter {
       onlyOrbs: this.onlyOrbs,
       proxies: {
         enabled: this.useProxies,
+        defaultScheme: this.defaultProxyScheme,
         count: this.proxyList.proxies.length,
         fileExists: this.proxyList.exists,
         fileName: path.basename(this.proxyList.file),

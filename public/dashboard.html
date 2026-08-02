@@ -641,6 +641,20 @@ html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
             </div>
           </div>
 
+          <div style="display:flex;align-items:center;gap:10px;margin-top:14px">
+            <label for="proxy-scheme" style="font-size:12px;color:var(--fg-rail)">
+              Protocol for lines without a prefix
+            </label>
+            <select id="proxy-scheme" class="btn btn-ghost small" style="padding:6px 10px">
+              <option value="http">HTTP / HTTPS</option>
+              <option value="socks5">SOCKS5</option>
+              <option value="socks4">SOCKS4</option>
+            </select>
+          </div>
+          <p class="hint-text" style="margin-top:6px">Pick <code>SOCKS5</code> if your
+            <code>ip.txt</code> holds bare <code>ip:port:login:password</code> SOCKS5 proxies –
+            otherwise they are dialed as HTTP and reset the connection.</p>
+
           <div class="proxy-status" id="proxy-status"></div>
 
           <div style="display:flex;gap:10px;margin-top:14px">
@@ -663,9 +677,10 @@ http://user:pass@host:port
 socks5://host:port
 socks5://user:pass@host:port
 socks5://host:port:user:pass</pre>
-          <p class="hint-text">No scheme means HTTP. For SOCKS5 add the <code>socks5://</code>
-            prefix – a bare <code>host:port:user:pass</code> line is read as HTTP and a real
-            SOCKS5 proxy will just reset the connection (<code>ECONNRESET</code>).
+          <p class="hint-text">No scheme means the default protocol picked above (HTTP unless
+            you change it). For SOCKS5 either set that dropdown to <code>SOCKS5</code> or add a
+            <code>socks5://</code> prefix per line – a bare <code>host:port:user:pass</code> line
+            dialed as HTTP against a real SOCKS5 proxy just resets (<code>ECONNRESET</code>).
             Authenticated SOCKS5 now works: each one is routed through a local bridge that
             handles the login Chromium can't. Lines starting with <code>#</code> are ignored.</p>
 
@@ -1317,6 +1332,9 @@ function renderProxySettings() {
   const verified = new Set(state.accounts.filter(a => a.proxyIp).map(a => a.proxyIp));
 
   $('tg-proxies').classList.toggle('on', !!p.enabled);
+  if (p.defaultScheme && $('proxy-scheme').value !== p.defaultScheme) {
+    $('proxy-scheme').value = p.defaultScheme;
+  }
   $('proxy-desc').innerHTML = p.fileExists
     ? `<code>${esc(p.fileName)}</code> holds ${p.count} ${p.count === 1 ? 'proxy' : 'proxies'}.
        When this is off every account uses your own IP.`
@@ -1479,6 +1497,10 @@ $('tg-onlyorbs').onclick = () => post('/api/only-orbs', { value: !(state.onlyOrb
 $('tg-desktop').onclick = () => post('/api/desktop-mode', { value: !state.desktopMode });
 $('tg-proxies').onclick = () =>
   post('/api/use-proxies', { value: !(state.proxies && state.proxies.enabled) });
+$('proxy-scheme').onchange = async (e) => {
+  await post('/api/proxy-scheme', { value: e.target.value });
+  toast(`Default proxy protocol: ${e.target.value.toUpperCase()} – ip.txt re-read`);
+};
 $('btn-reload-proxies').onclick = async () => {
   const res = await post('/api/reload-proxies');
   const data = await res.json().catch(() => ({}));

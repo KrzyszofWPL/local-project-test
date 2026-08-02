@@ -6,9 +6,17 @@ const SCHEMES = ['http', 'https', 'socks5', 'socks4'];
 
 const isPort = (s) => /^\d{1,5}$/.test(s) && +s >= 1 && +s <= 65535;
 
-function parseLine(line) {
+// Scheme applied to lines that don't carry their own `scheme://` prefix. Lets a
+// whole `ip:port:user:pass` list be treated as e.g. SOCKS5 without editing every
+// line. An explicit prefix on a line always wins over this default.
+function normalizeScheme(scheme) {
+  const s = String(scheme || 'http').toLowerCase();
+  return SCHEMES.includes(s) ? s : 'http';
+}
+
+function parseLine(line, defaultScheme = 'http') {
   let rest = line.trim();
-  let scheme = 'http';
+  let scheme = normalizeScheme(defaultScheme);
 
   const withScheme = rest.match(/^([a-zA-Z][a-zA-Z0-9+.-]*):\/\/(.*)$/);
   if (withScheme) {
@@ -79,8 +87,9 @@ function parseLine(line) {
   };
 }
 
-function loadProxies(file = PROXY_FILE) {
-  const result = { file, exists: false, proxies: [], errors: [] };
+function loadProxies(file = PROXY_FILE, defaultScheme = process.env.PROXY_SCHEME || 'http') {
+  defaultScheme = normalizeScheme(defaultScheme);
+  const result = { file, exists: false, proxies: [], errors: [], defaultScheme };
 
   let raw;
   try {
@@ -95,7 +104,7 @@ function loadProxies(file = PROXY_FILE) {
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('//')) return;
     try {
-      const proxy = parseLine(trimmed);
+      const proxy = parseLine(trimmed, defaultScheme);
       const key = `${proxy.server}|${proxy.username || ''}`;
       if (seen.has(key)) {
         result.errors.push({ line: i + 1, text: trimmed, error: 'duplicate – skipped' });
@@ -119,4 +128,4 @@ function proxyUrl(proxy) {
   return `${proxy.scheme}://${creds}${proxy.host}:${proxy.port}`;
 }
 
-module.exports = { loadProxies, parseLine, proxyUrl, PROXY_FILE };
+module.exports = { loadProxies, parseLine, proxyUrl, normalizeScheme, SCHEMES, PROXY_FILE };

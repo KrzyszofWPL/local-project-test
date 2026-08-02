@@ -87,6 +87,9 @@ const server = http.createServer(async (req, res) => {
           engine.setUseProxies(body.value);
           return json(res, 200, { ok: true });
 
+        case '/api/proxy-scheme':
+          return json(res, 200, { ok: true, scheme: engine.setDefaultProxyScheme(body.value) });
+
         case '/api/reload-proxies':
           engine.loadProxies();
           return json(res, 200, { ok: true, count: engine.proxyList.proxies.length });
