@@ -222,6 +222,43 @@ function restoreTokens() {
       'nieznany schemat musi wrócić do http');
   });
 
+  await test('weryfikacja ręczna jest szeregowana – jedno konto naraz', async () => {
+    const e = new Engine();
+    e.accounts.forEach(a => { a._context = { fake: true }; });
+
+    const order = [];
+    const p0 = e._enterVerifyQueue(e.accounts[0], 'captcha').then(r => order.push(['A', r.ok]));
+    const p1 = e._enterVerifyQueue(e.accounts[1], 'captcha').then(r => order.push(['B', r.ok]));
+
+    assert.strictEqual(e.verifyStatus().current.id, '0');
+    assert.strictEqual(e.verifyStatus().waiting.length, 1,
+      'drugie konto musi czekać, a nie otwierać własnego okna');
+    assert.throws(() => e.resolveVerification('1', true), /not the account/,
+      'potwierdzić można tylko konto, które trzyma kolejkę');
+
+    e.resolveVerification('0', true);
+    await p0;
+    assert.strictEqual(e.verifyStatus().current.id, '1', 'kolejka musi przejść dalej');
+
+    // Zatrzymanie konta trzymającego kolejkę nie może jej zakleszczyć.
+    await e.stop('1');
+    await p1;
+    assert.strictEqual(e.verifyStatus().current, null);
+    assert.deepStrictEqual(order.map(o => o[0]), ['A', 'B']);
+    assert.strictEqual(order[1][1], false, 'zatrzymane konto kończy się wynikiem negatywnym');
+  });
+
+  await test('profil używa trwałego katalogu i nie loguje się tokenem bez potrzeby', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
+    assert.ok(src.includes('launchPersistentContext'),
+      'kontekst musi być trwały, żeby cookies i IndexedDB przetrwały restart');
+    const inner = src.match(/async _runInner\(acc\)[\s\S]*?\n  \}/)[0];
+    assert.ok(/hadSession/.test(inner),
+      'przy istniejącej sesji nie wolno ponownie wstrzykiwać tokenu');
+    assert.ok(inner.indexOf('hadSession') < inner.indexOf("ls.setItem('token'"),
+      'sprawdzenie sesji musi poprzedzać wstrzyknięcie tokenu');
+  });
+
   await test('profil przeglądarki jest przypisany do tokenu, nie do numeru linii', async () => {
     const e = new Engine();
     const a = e.accounts[0].profileDir;

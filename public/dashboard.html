@@ -1068,9 +1068,19 @@ function accountDetail(a) {
   return `<div class="row-detail">
     ${a.desktopHint ? `<div class="notice hint">Discord refused to track <b>game</b>-type
       quests for this account (401). Enable <b>Desktop mode</b> in Settings and restart.</div>` : ''}
-    ${a.needsCaptcha ? `<div class="notice captcha">Discord asked for verification. Enable
-      <b>Show browser windows</b>, run this account and complete the verification manually –
-      the session will be remembered.</div>` : ''}
+    ${a.verifyState === 'active' ? `<div class="notice captcha">
+      <b>Your turn – ${esc(a.verifyReason || 'verification needed')}.</b>
+      Solve it in this account's open browser window (it goes through this account's
+      proxy), then confirm below. Every other account waits its turn.
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="btn small" data-verify-done="${a.id}">I solved it</button>
+        <button class="btn btn-ghost small" data-verify-skip="${a.id}">Skip this one</button>
+      </div></div>` : ''}
+    ${a.verifyState === 'waiting' ? `<div class="notice captcha">Waiting in the verification
+      queue – another account is being verified right now.</div>` : ''}
+    ${a.needsCaptcha && !a.verifyState ? `<div class="notice captcha">Discord asked for
+      verification. Enable <b>Show browser windows</b>, run this account and complete the
+      verification manually – the session will be remembered.</div>` : ''}
     <div class="detail-grid">
       <div class="detail-col">
         <div class="rail-label tight">QUESTS (${a.quests.length})</div>
@@ -1428,6 +1438,21 @@ function setView(next) {
 
 /* ── Interactions ──────────────────────────────────────────────────────── */
 document.addEventListener('click', e => {
+  const vDone = e.target.closest('[data-verify-done]');
+  if (vDone) {
+    e.stopPropagation();
+    post('/api/verify-done', { id: vDone.dataset.verifyDone })
+      .then(() => toast('Confirmed – next account in the queue'));
+    return;
+  }
+  const vSkip = e.target.closest('[data-verify-skip]');
+  if (vSkip) {
+    e.stopPropagation();
+    post('/api/verify-skip', { id: vSkip.dataset.verifySkip })
+      .then(() => toast('Skipped – moving to the next account'));
+    return;
+  }
+
   const menuToggle = e.target.closest('[data-menu-toggle]');
   if (menuToggle) {
     e.stopPropagation();

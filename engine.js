@@ -118,6 +118,8 @@ class Engine extends EventEmitter {
     this.totals = { questsCompleted: 0, orbsEarned: 0 };
     this.proxyList = { file: PROXY_FILE, exists: false, proxies: [], errors: [] };
     this.proxyTest = { running: false, done: 0, total: 0, ok: 0, results: [] };
+    this._verifyQueue = [];
+    this._verifyCurrent = null;
     this._loadState();
     this.loadProxies();
     this.loadTokens();
@@ -406,6 +408,7 @@ class Engine extends EventEmitter {
           && this.accounts.length > this.proxyList.proxies.length,
         test: this.proxyTest,
       },
+      verify: this.verifyStatus(),
       accounts: this.accounts.map(a => {
         const target = a.quests.reduce((s, q) => s + (q.target || 0), 0);
         const done = a.quests.reduce((s, q) => s + Math.min(q.done || 0, q.target || 0), 0);
@@ -424,6 +427,8 @@ class Engine extends EventEmitter {
           proxyIp: a.proxyIp,
           proxyError: a.proxyError,
           needsCaptcha: a.needsCaptcha,
+          verifyState: a.verifyState ?? null,
+          verifyReason: a.verifyReason ?? null,
           desktopHint: !!a.desktopHint && !this.desktopMode,
           questsDone: a.questsDone,
           orbs: a.orbs,
@@ -473,10 +478,113 @@ class Engine extends EventEmitter {
     }
   }
 
+  // Manual verification lane, width 1.
+  //
+  // A CAPTCHA has to be solved by a person, in the account's own browser, so the
+  // challenge travels over that account's proxy. With 100 accounts that must be
+  // strictly serialised – otherwise every account that hits a CAPTCHA pops a
+  // window at the same moment. Accounts queue here and are handed over one at a
+  // time; the panel shows whose turn it is and the run resumes once you confirm.
+  _enterVerifyQueue(acc, reason) {
+    const entry = { acc, reason, resolve: null, at: Date.now() };
+    const promise = new Promise((resolve) => { entry.resolve = resolve; });
+    entry.promise = promise;
+    this._verifyQueue.push(entry);
+    this._push(acc, { verifyState: 'waiting', verifyReason: reason });
+    this._pumpVerifyQueue();
+    return promise;
+  }
+
+  _pumpVerifyQueue() {
+    if (this._verifyCurrent || !this._verifyQueue.length) return;
+    const entry = this._verifyQueue.shift();
+    // Drop entries whose account was stopped while queueing.
+    if (!entry.acc._context) {
+      entry.resolve({ ok: false, reason: 'account stopped' });
+      return this._pumpVerifyQueue();
+    }
+    this._verifyCurrent = entry;
+    this._push(entry.acc, { verifyState: 'active' });
+    this._log(entry.acc, `Your turn: ${entry.reason}. Solve it in the open window, `
+      + 'then press "I solved it" in the panel.');
+
+    if (this.headless) {
+      this._log(entry.acc, 'Note: headless mode is on, so no window is visible. '
+        + 'Turn off headless mode to solve verification by hand.');
+    }
+    this.emit('update');
+  }
+
+  // Called from the panel when the person is done with the current account.
+  resolveVerification(id, ok = true) {
+    const cur = this._verifyCurrent;
+    if (!cur) throw new Error('Nothing is waiting for verification');
+    if (id != null && String(id) !== String(cur.acc.id)) {
+      throw new Error('That is not the account currently being verified');
+    }
+    this._verifyCurrent = null;
+    this._push(cur.acc, { verifyState: null, verifyReason: null,
+                          needsCaptcha: ok ? false : cur.acc.needsCaptcha });
+    cur.resolve({ ok });
+    this._pumpVerifyQueue();
+    return cur.acc.id;
+  }
+
+  // Position in the queue, for the panel.
+  verifyStatus() {
+    return {
+      current: this._verifyCurrent ? {
+        id: this._verifyCurrent.acc.id,
+        label: this._verifyCurrent.acc.username || this._verifyCurrent.acc.label,
+        reason: this._verifyCurrent.reason,
+        since: this._verifyCurrent.at,
+      } : null,
+      waiting: this._verifyQueue.map(e => ({
+        id: e.acc.id,
+        label: e.acc.username || e.acc.label,
+      })),
+    };
+  }
+
   _log(acc, msg) {
     acc.logs.push({ ts: Date.now(), msg: String(msg) });
     if (acc.logs.length > 300) acc.logs.shift();
     this.emit('update');
+  }
+
+  // A persistent context keeps cookies, cache, IndexedDB and service workers in
+  // the account's own directory, so a session that is still valid is reused
+  // instead of logging in with the raw token on every run.
+  async _openProfile(acc, proxy, profileDir) {
+    let chromium;
+    try {
+      ({ chromium } = require('playwright'));
+    } catch (_) {
+      throw new Error('Playwright is not installed. Run: npm install');
+    }
+
+    const fp = acc.fingerprint || fingerprintFor(acc.token);
+    fs.mkdirSync(profileDir, { recursive: true });
+
+    return chromium.launchPersistentContext(path.join(profileDir, 'browser'), {
+      headless: this.headless,
+      proxy: await playwrightProxy(proxy),
+      userAgent: this.desktopMode ? ELECTRON_UA : fp.userAgent,
+      locale: fp.locale,
+      timezoneId: fp.timezoneId,
+      viewport: fp.viewport,
+      screen: fp.screen,
+      deviceScaleFactor: fp.deviceScaleFactor,
+      args: [
+        '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+        '--disable-gpu', '--no-first-run', '--disable-background-networking',
+        '--disable-default-apps', '--disable-extensions', '--disable-sync',
+        '--disable-background-timer-throttling',
+        '--disable-backgrounding-occluded-windows',
+        '--disable-renderer-backgrounding',
+        ...(proxy ? WEBRTC_ARGS : []),
+      ],
+    });
   }
 
   async _ensureBrowser(proxied) {
@@ -535,6 +643,17 @@ class Engine extends EventEmitter {
   async stop(id) {
     const acc = this.accounts.find(a => a.id === String(id));
     if (!acc) return;
+    // Never leave a stopped account holding the verification lane.
+    if (this._verifyCurrent && this._verifyCurrent.acc.id === acc.id) {
+      try { this.resolveVerification(acc.id, false); } catch (_) {}
+    }
+    this._verifyQueue = this._verifyQueue.filter((e) => {
+      if (e.acc.id !== acc.id) return true;
+      e.resolve({ ok: false, reason: 'stopped' });
+      return false;
+    });
+    this._push(acc, { verifyState: null, verifyReason: null });
+
     const ctx = acc._context;
     acc._context = null;
     if (ctx) {
@@ -608,25 +727,11 @@ class Engine extends EventEmitter {
   async _runInner(acc) {
     const proxy = acc.proxy;
     await this._resolveScheme(proxy);
-    const browser = await this._ensureBrowser(!!proxy);
 
     const profileDir = acc.profileDir || profileDirFor(acc.token);
-    fs.mkdirSync(profileDir, { recursive: true });
-
     const fp = acc.fingerprint || fingerprintFor(acc.token);
 
-    const context = await browser.newContext({
-      userAgent: this.desktopMode ? ELECTRON_UA : fp.userAgent,
-      locale: fp.locale,
-      timezoneId: fp.timezoneId,
-      viewport: fp.viewport,
-      screen: fp.screen,
-      deviceScaleFactor: fp.deviceScaleFactor,
-      proxy: await playwrightProxy(proxy),
-      storageState: fs.existsSync(path.join(profileDir, 'state.json'))
-        ? path.join(profileDir, 'state.json')
-        : undefined,
-    });
+    const context = await this._openProfile(acc, proxy, profileDir);
     acc._context = context;
 
     // Line the JS-visible fingerprint up with the context options before any
@@ -668,24 +773,39 @@ class Engine extends EventEmitter {
       this._push(acc, { message: 'Checking the account…' });
       await this._fetchIdentity(acc, context);
 
-      const page = await context.newPage();
+      // A persistent profile already has a page open; reuse it so the profile's
+      // cookies and storage stay attached to the same browsing context.
+      const page = context.pages()[0] || await context.newPage();
       page.setDefaultTimeout(0);
       page.on('dialog', d => d.dismiss().catch(() => {}));
 
       await page.exposeFunction('__questReport', (ev) => this._onReport(acc, ev));
 
-      this._push(acc, { status: 'running', message: 'Logging in…' });
+      this._push(acc, { status: 'running', message: 'Opening Discord…' });
 
       await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
-      await page.evaluate(tk => {
-        let ls = window.localStorage;
-        if (!ls) {
-          const iframe = document.createElement('iframe');
-          document.body.appendChild(iframe);
-          ls = iframe.contentWindow.localStorage;
-        }
-        ls.setItem('token', JSON.stringify(tk));
-      }, acc.token.trim());
+
+      // Reuse the stored session when the profile still holds one; only fall
+      // back to the raw token when there is nothing to resume.
+      const hadSession = await page.evaluate(() => {
+        try { return !!(window.localStorage && window.localStorage.getItem('token')); }
+        catch (_) { return false; }
+      });
+
+      if (hadSession) {
+        this._log(acc, 'Resuming the saved session from this profile (no token login)');
+      } else {
+        this._log(acc, 'No stored session in this profile – signing in with the token once');
+        await page.evaluate(tk => {
+          let ls = window.localStorage;
+          if (!ls) {
+            const iframe = document.createElement('iframe');
+            document.body.appendChild(iframe);
+            ls = iframe.contentWindow.localStorage;
+          }
+          ls.setItem('token', JSON.stringify(tk));
+        }, acc.token.trim());
+      }
 
       this._push(acc, { message: 'Loading Discord…' });
       await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
@@ -806,7 +926,16 @@ class Engine extends EventEmitter {
       case 'qerr': {
         const q = acc.quests.find(x => x.id === ev.id);
         if (q) { q.state = 'error'; q.error = ev.err; }
-        if (ev.captcha) this._push(acc, { needsCaptcha: true });
+        if (ev.captcha) {
+          this._push(acc, { needsCaptcha: true });
+          // Queue for a person instead of failing outright – and keep the run
+          // alive so the browser window stays open to solve it in.
+          this._enterVerifyQueue(acc, 'Discord asked for a CAPTCHA')
+            .then(({ ok }) => {
+              if (ok) this._log(acc, 'Verification confirmed – the quest can be retried.');
+            })
+            .catch(() => {});
+        }
         this._log(acc, 'Error: ' + ev.err);
 
         const isGameTask = q && ['PLAY_ON_DESKTOP', 'STREAM_ON_DESKTOP'].includes(q.task);

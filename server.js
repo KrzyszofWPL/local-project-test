@@ -87,6 +87,12 @@ const server = http.createServer(async (req, res) => {
           engine.setUseProxies(body.value);
           return json(res, 200, { ok: true });
 
+        case '/api/verify-done':
+          return json(res, 200, { ok: true, id: engine.resolveVerification(body.id, true) });
+
+        case '/api/verify-skip':
+          return json(res, 200, { ok: true, id: engine.resolveVerification(body.id, false) });
+
         case '/api/proxy-scheme':
           return json(res, 200, { ok: true, scheme: engine.setDefaultProxyScheme(body.value) });
 
