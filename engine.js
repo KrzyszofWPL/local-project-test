@@ -4,7 +4,7 @@ const { EventEmitter } = require('events');
 
 const INJECT_SCRIPT = require('./inject.js');
 const { loadProxies, proxyUrl, normalizeScheme, PROXY_FILE } = require('./proxies.js');
-const { playwrightProxy, closeAll: closeBridges } = require('./socks-bridge.js');
+const { playwrightProxy, lastErrorFor, closeAll: closeBridges } = require('./socks-bridge.js');
 const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
@@ -50,6 +50,16 @@ function shortError(e) {
     .split('\n')[0]
     .replace(/^apiRequestContext\.\w+:\s*/, '')
     .trim();
+}
+
+// A SOCKS5 proxy is reached through a local bridge, so Chromium can only ever
+// report "the bridge said 502". Swap in the reason the bridge actually hit.
+function proxyError(e, proxy) {
+  const msg = shortError(e);
+  const real = lastErrorFor(proxy);
+  return real && /502|bad gateway|socket hang up|ECONNRESET/i.test(msg)
+    ? `${real} (via SOCKS5 bridge)`
+    : msg;
 }
 
 class Engine extends EventEmitter {
@@ -262,7 +272,7 @@ class Engine extends EventEmitter {
       this._applyProbe(acc.proxy, ip, null);
       return ip;
     } catch (e) {
-      const why = shortError(e);
+      const why = proxyError(e, acc.proxy);
       this._applyProbe(acc.proxy, null, why);
       throw new Error(why);
     }
@@ -287,7 +297,7 @@ class Engine extends EventEmitter {
           entry = { label: proxy.label, ok: true, ip };
           this.proxyTest.ok += 1;
         } catch (e) {
-          const why = shortError(e);
+          const why = proxyError(e, proxy);
           this._applyProbe(proxy, null, why);
           entry = { label: proxy.label, ok: false, error: why };
         }
@@ -554,7 +564,7 @@ class Engine extends EventEmitter {
           this._history[acc.id] = { ...(this._history[acc.id] ?? {}), proxyIp: ip };
           this._log(acc, `Proxy ${proxy.label} – exit IP ${ip}`);
         } catch (e) {
-          const why = shortError(e);
+          const why = proxyError(e, proxy);
           this._push(acc, { proxyIp: null, proxyError: why });
           this._log(acc, `Proxy ${proxy.label} did not respond: ${why}`);
           throw new Error(`Proxy ${proxy.label} is not reachable: ${why}`);

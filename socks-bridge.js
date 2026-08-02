@@ -133,6 +133,9 @@ function socks5Connect(proxy, destHost, destPort, timeout = 20000) {
 // Build (but do not yet listen on) the local HTTP proxy that fronts `proxy`.
 function createBridgeServer(proxy) {
   const server = http.createServer();
+  const note = (err) => {
+    lastErrors.set(bridgeKey(proxy), String(err && err.message ? err.message : err));
+  };
 
   // Plain HTTP (http:// targets): Chromium sends an absolute-form request line.
   // Let Node's HTTP client own the framing and just feed it a socket that is
@@ -159,7 +162,10 @@ function createBridgeServer(proxy) {
       res.writeHead(upRes.statusCode || 502, upRes.headers);
       upRes.pipe(res);
     });
-    upstream.on('error', () => { try { res.writeHead(502); res.end(); } catch (_) {} });
+    upstream.on('error', (err) => {
+      note(err);
+      try { res.writeHead(502); res.end(String(err && err.message ? err.message : err)); } catch (_) {}
+    });
     req.pipe(upstream);
   });
 
@@ -179,11 +185,15 @@ function createBridgeServer(proxy) {
       socket.on('error', bail);
       clientSocket.on('error', bail);
     }).catch((err) => {
+      note(err);
+      const reason = String(err && err.message ? err.message : err).replace(/[\r\n]+/g, ' ');
       try {
-        clientSocket.write('HTTP/1.1 502 Bad Gateway\r\n\r\n');
-        clientSocket.write(String(err && err.message ? err.message : err));
+        // Put the real reason on the status line too – some clients surface the
+        // status text but never the body.
+        clientSocket.write(`HTTP/1.1 502 ${reason}\r\n`
+          + 'Content-Length: 0\r\nConnection: close\r\n\r\n');
       } catch (_) {}
-      clientSocket.destroy();
+      clientSocket.end();
     });
   });
 
@@ -194,6 +204,14 @@ function createBridgeServer(proxy) {
 // One bridge per unique upstream proxy, cached and reused across contexts.
 const bridges = new Map();
 const bridgeKey = (p) => `${p.host}:${p.port}:${p.username || ''}:${p.password || ''}`;
+
+// Chromium only ever sees "the local bridge returned 502", which hides why the
+// upstream actually failed. Remember the last real reason per proxy so callers
+// can report something actionable instead of a bare gateway error.
+const lastErrors = new Map();
+function lastErrorFor(proxy) {
+  return proxy ? lastErrors.get(bridgeKey(proxy)) || null : null;
+}
 
 // Only SOCKS5 needs the bridge – Chromium handles HTTP/HTTPS proxies (incl.
 // auth) natively, and SOCKS4 has no username/password to smuggle.
@@ -251,4 +269,4 @@ process.on('exit', () => {
   for (const b of bridges.values()) { try { b.server.close(); } catch (_) {} }
 });
 
-module.exports = { playwrightProxy, needsBridge, socks5Connect, closeAll };
+module.exports = { playwrightProxy, needsBridge, socks5Connect, lastErrorFor, closeAll };
