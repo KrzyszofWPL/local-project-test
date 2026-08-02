@@ -1,31 +1,3 @@
-/**
- * Discord Quest Automation – Playwright browser injection
- *
- * Command line runner. The control panel (npm start) is the friendlier way
- * to use this project; this file does the same job without a UI.
- *
- * Usage:
- *   node browser.js                        (5 accounts in parallel)
- *   set CONCURRENCY=20 && node browser.js  (Windows – 20 in parallel)
- *   CONCURRENCY=20 node browser.js         (Linux/Mac)
- *
- * Picking CONCURRENCY:
- *   Every open Discord context uses ~200-400 MB of RAM.
- *   CONCURRENCY=5   →  ~1-2 GB RAM   (safe on any PC)
- *   CONCURRENCY=10  →  ~2-4 GB RAM
- *   CONCURRENCY=20  →  ~4-8 GB RAM
- *   CONCURRENCY=50  →  ~10-20 GB RAM (only with lots of RAM and a fast CPU)
- *
- * Proxies:
- *   Put one proxy per line in ip.txt and account #1 leaves through proxy #1,
- *   account #2 through proxy #2, and so on – see proxies.js for the accepted
- *   formats. Without ip.txt every account uses your own IP.
- *
- * How long a quest takes:
- *   WATCH_VIDEO quests          → seconds (the timestamp is faked)
- *   PLAY_ON_DESKTOP quests etc. → ~15+ minutes (heartbeats every 20s)
- */
-
 const { chromium } = require('playwright');
 const fs = require('fs');
 const path = require('path');
@@ -35,12 +7,6 @@ const { loadProxies } = require('./proxies.js');
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const CONCURRENCY = parseInt(process.env.CONCURRENCY || '5', 10);
 const USE_PROXIES = process.env.USE_PROXIES !== 'false';
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Script injected into the Discord page (runs inside the browser). Modelled on
-// aamiaa's script: it drives Discord's own stores and FluxDispatcher instead of
-// sending raw heartbeats, so the client itself reports progress to the backend.
-// ─────────────────────────────────────────────────────────────────────────────
 const INJECT_SCRIPT = /* javascript */ `(async () => {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const logs  = [];
@@ -285,10 +251,7 @@ const INJECT_SCRIPT = /* javascript */ `(async () => {
 
   return { results, logs };
 })()`;
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Minimal concurrency pool (no external dependencies)
-// ─────────────────────────────────────────────────────────────────────────────
+────────────────────────────────────────────────────────────────────────────
 async function runPool(items, limit, fn) {
   const results = new Array(items.length);
   let idx = 0;
@@ -301,10 +264,7 @@ async function runPool(items, limit, fn) {
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, worker));
   return results;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-// One Discord account
-// ─────────────────────────────────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────
 async function processToken(browser, token, index, total, proxy) {
   const tag = `[${String(index + 1).padStart(2)}/${total}] ${token.substring(0, 12)}...`;
   const log = (...a) => console.log(tag, ...a);
@@ -315,8 +275,6 @@ async function processToken(browser, token, index, total, proxy) {
     locale: 'pl-PL',
     timezoneId: 'Europe/Warsaw',
     viewport: { width: 1280, height: 800 },
-    // Each account leaves through its own IP, which is what keeps Discord
-    // from rate limiting (429) the whole batch at once.
     proxy: proxy ? {
       server: proxy.server,
       username: proxy.username ?? undefined,
@@ -324,15 +282,11 @@ async function processToken(browser, token, index, total, proxy) {
     } : undefined,
   });
 
-  // Silence dialogs (Discord notification prompts and friends)
   const page = await context.newPage();
   page.on('dialog', d => d.dismiss().catch(() => {}));
 
   try {
-    // PLAY_ACTIVITY quests take many minutes – drop the default timeouts
     page.setDefaultTimeout(0);
-
-    // A dead proxy should look like a dead proxy, not like a bad token.
     if (proxy) {
       try {
         const res = await context.request.get('https://api.ipify.org?format=json',
@@ -343,15 +297,11 @@ async function processToken(browser, token, index, total, proxy) {
         return;
       }
     }
-
-    // Step 1: open the login page – this gives localStorage the right origin
     await page.goto('https://discord.com/login', {
       waitUntil: 'domcontentloaded',
       timeout: 30000
     });
 
-    // Step 2: write the token into localStorage.
-    // Discord deletes window.localStorage – we get it back through an iframe.
     await page.evaluate(tk => {
       let ls = window.localStorage;
       if (!ls) {
@@ -364,23 +314,20 @@ async function processToken(browser, token, index, total, proxy) {
 
     log('→ token injected, loading Discord…');
 
-    // Step 3: go to the app – Discord reads the token and logs in
     await page.goto('https://discord.com/channels/@me', {
       waitUntil: 'domcontentloaded',
       timeout: 60000
     });
 
-    // Step 4: wait for webpack
     await page.waitForFunction(() => !!window.webpackChunkdiscord_app, {
       timeout: 60000
     });
 
-    // Step 5: wait for the session data + QuestsStore (~10-15s)
+
     await page.waitForTimeout(12000);
 
     log('→ Discord loaded, running the quest script…');
 
-    // Step 6: inject the script and collect the results
     const result = await page.evaluate(INJECT_SCRIPT);
 
     if (!result) {
@@ -401,7 +348,6 @@ async function processToken(browser, token, index, total, proxy) {
       return;
     }
 
-    // Print the injected script's own log
     for (const l of (result.logs ?? [])) log(' ·', l);
 
     if (!result.results?.length) {
@@ -424,9 +370,6 @@ async function processToken(browser, token, index, total, proxy) {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Entry point
-// ─────────────────────────────────────────────────────────────────────────────
 async function main() {
   if (!fs.existsSync(TOKENS_FILE)) {
     console.error('[!] tokens.txt is missing'); process.exit(1);
@@ -439,8 +382,6 @@ async function main() {
     console.error('[!] tokens.txt is empty'); process.exit(1);
   }
 
-  // Account #n leaves through proxy #n; the list wraps around when there are
-  // fewer proxies than accounts.
   const proxyList = USE_PROXIES ? loadProxies().proxies : [];
   const proxyFor = i => proxyList.length ? proxyList[i % proxyList.length] : null;
 
@@ -458,8 +399,6 @@ async function main() {
 
   const browser = await chromium.launch({
     headless: true,
-    // Chromium only honours a per-context proxy when the browser itself was
-    // launched with one; every context overrides this placeholder.
     proxy: proxyList.length ? { server: 'http://per-context' } : undefined,
     args: [
       '--no-sandbox',
