@@ -1,21 +1,3 @@
-/**
- * Proxy list – ip.txt
- *
- * One proxy per line. Every common format you get from a proxy vendor is
- * accepted, so a list can be pasted in as-is:
- *
- *   host:port
- *   host:port:user:pass
- *   user:pass@host:port
- *   user:pass:host:port
- *   http://user:pass@host:port
- *   socks5://host:port
- *
- * Lines starting with # or // are ignored, so the file can carry notes.
- * Without a scheme the proxy is assumed to be HTTP, which is what virtually
- * every residential/datacenter vendor hands out.
- */
-
 const fs = require('fs');
 const path = require('path');
 
@@ -24,7 +6,6 @@ const SCHEMES = ['http', 'https', 'socks5', 'socks4'];
 
 const isPort = (s) => /^\d{1,5}$/.test(s) && +s >= 1 && +s <= 65535;
 
-/** Parses a single line into a proxy object, or throws with a readable reason. */
 function parseLine(line) {
   let rest = line.trim();
   let scheme = 'http';
@@ -44,10 +25,6 @@ function parseLine(line) {
   let password = null;
   let hostPart = rest;
 
-  // Split on the last @ so passwords may contain one. Both sides are then
-  // checked, because vendors emit this either way round:
-  //   user:pass@host:port  – the usual form
-  //   host:port@user:pass  – what Webshare's list designer offers by default
   const at = rest.lastIndexOf('@');
   if (at !== -1) {
     const left = rest.slice(0, at);
@@ -74,8 +51,6 @@ function parseLine(line) {
   if (parts.length === 2) {
     [host, port] = parts;
   } else if (parts.length === 4 && at === -1) {
-    // Colon-separated credentials: either host:port:user:pass or
-    // user:pass:host:port. The numeric field decides which one it is.
     if (isPort(parts[1])) {
       [host, port, username, password] = parts;
     } else if (isPort(parts[3])) {
@@ -98,20 +73,12 @@ function parseLine(line) {
     port: +port,
     username: username || null,
     password: password || null,
-    /** What Playwright wants – credentials are passed separately. */
     server: `${scheme}://${host}:${port}`,
-    /** Safe to show in the panel: never contains credentials. */
     label: `${host}:${port}`,
     auth: !!username,
   };
 }
 
-/**
- * Reads ip.txt.
- *
- * Never throws: a missing or broken file must not take the panel down, so
- * problems come back as data the UI can show.
- */
 function loadProxies(file = PROXY_FILE) {
   const result = { file, exists: false, proxies: [], errors: [] };
 
@@ -144,7 +111,6 @@ function loadProxies(file = PROXY_FILE) {
   return result;
 }
 
-/** Full proxy URL including credentials – only for the copy action. */
 function proxyUrl(proxy) {
   if (!proxy) return '';
   const creds = proxy.username
