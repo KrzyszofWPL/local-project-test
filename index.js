@@ -23,7 +23,6 @@ function makeSuperProperties(buildNumber) {
 	})).toString('base64');
 }
 
-// Discord API zwraca pola w snake_case; obsłuż obie konwencje.
 function questField(obj, camel, snake) {
 	return obj?.[camel] ?? obj?.[snake];
 }
@@ -48,7 +47,6 @@ async function fetchDiscordBuildNumber() {
 		});
 		const html = await res.text();
 
-		// Próbuj różne wzorce nazewnictwa plików JS (hexowe i alfanumeryczne)
 		const scripts = [
 			...[...html.matchAll(/src="\/assets\/([a-f0-9]+\.js)"/g)].map(m => m[1]),
 			...[...html.matchAll(/src="\/assets\/([a-zA-Z0-9]+\.js)"/g)].map(m => m[1]),
@@ -61,7 +59,6 @@ async function fetchDiscordBuildNumber() {
 					headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.6613.186 Safari/537.36' }
 				});
 				const js = await jsRes.text();
-				// Kilka wzorców jak Discord może osadzić numer build
 				const match = js.match(/[Bb]uild\s*[Nn]umber['":\s]+(\d{4,7})/)
 					?? js.match(/buildNumber['":\s]+(\d{4,7})/)
 					?? js.match(/CLIENT_BUILD_NUMBER['":\s]+(\d{4,7})/);
@@ -167,7 +164,6 @@ async function collectQuests(fetcher) {
 		}
 	};
 
-	// 1. Questy do których konto jest zapisane
 	try {
 		const me = await fetcher('/quests/@me');
 		if (Array.isArray(me)) add(me);
@@ -178,7 +174,6 @@ async function collectQuests(fetcher) {
 		}
 	} catch (e) { if (e.status === 401) throw e; }
 
-	// 2. Questy do odkrycia przez placement (zasila zakładkę Discover → Quests)
 	const placements = [
 		'QUESTS_TAB', 'QUEST_BAR', 'LIBRARY_CONTEXTUAL_QUEST',
 		'DISCOVER', 'LIBRARY', 'QUEST_HOME', 'GAME_LIBRARY', 'ACTIVITY'
@@ -191,7 +186,6 @@ async function collectQuests(fetcher) {
 		} catch (_) { /* placement nieobsługiwany – ignoruj */ }
 	}
 
-	// 3. placement-alpha (eksperymentalny endpoint)
 	try {
 		const r = await fetcher('/quests/placement-alpha');
 		if (r?.quest) add([r.quest]);
@@ -219,7 +213,6 @@ async function processAccount(token, index, total) {
 		const quests = await collectQuests(fetcher);
 		console.log(`  [Info] Znaleziono questów łącznie: ${quests.length}`);
 
-		// Obsłuż zarówno camelCase jak i snake_case z API
 		const now = Date.now();
 		const pendingQuests = quests.filter((q) => {
 			const status = getUserStatus(q);
