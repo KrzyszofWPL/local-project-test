@@ -1,0 +1,1529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QUEST//RUNNER · Control Panel</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23E53935'/%3E%3Cpath d='M18 4L8 18h6l-2 10 12-14h-6z' fill='%230A0A0A'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Roboto:wght@300;400;500;700&family=Roboto+Mono:wght@300;400;500&family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,300,0,0&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0A0A0A;
+  --panel: rgba(26,26,26,.78);
+  --panel-solid: rgba(17,17,17,.9);
+  --line: #1F1F1F;
+  --line-soft: #171717;
+  --line-hard: #1C1C1C;
+  --accent: #E53935;
+  --accent-hot: #FF1744;
+  --orb: #FFB02E;
+  --warn: #D29922;
+  --fg: #ECECEC;
+  --fg-dim: #DCDCDC;
+  --fg-mute: #9A9A9A;
+  --fg-soft: #7A7A7A;
+  --fg-faint: #6B6B6B;
+  --fg-ghost: #5C5C5C;
+  --fg-rail: #4A4A4A;
+  --mono: 'Roboto Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+  font-family: Roboto, 'Helvetica Neue', Arial, sans-serif; }
+
+.ms { font-family: 'Material Symbols Rounded'; font-weight: normal; font-style: normal;
+  line-height: 1; letter-spacing: normal; text-transform: none; display: inline-block;
+  white-space: nowrap; direction: ltr; font-feature-settings: 'liga';
+  -webkit-font-smoothing: antialiased; font-size: 18px; }
+.ms.big { font-size: 22px; }
+.accent { color: var(--accent); }
+/* Without Google Fonts the ligatures won't render – hide icon names instead
+   of showing raw text ("settings", "bolt"…). */
+.no-icons .ms { font-size: 0 !important; width: 0; overflow: hidden; }
+.no-icons .brand-mark { width: 4px; height: 30px; }
+/* The ⋮ button has no text label, so it needs a drawn fallback of its own. */
+.no-icons .menu-btn::after { content: '\22EE'; font-size: 17px; line-height: 1; }
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #2A2A2A; }
+::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+
+@keyframes qrPulse { 0%,100% { opacity: 1; } 50% { opacity: .25; } }
+@keyframes qrSweep { 0% { transform: translateX(-100%); } 100% { transform: translateX(320%); } }
+@keyframes qrFade { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
+
+/* ── Background ──────────────────────────────────────────────────────── */
+.backdrop { position: fixed; inset: 0; overflow: hidden; pointer-events: none; z-index: 0; }
+#qr-matrix { position: absolute; inset: 0; width: 100%; height: 100%; opacity: .42; }
+.skull { position: absolute; top: 50%; left: 58%; transform: translate(-50%,-50%);
+  font-size: 620px; line-height: 1; color: rgba(229,57,53,.16); filter: blur(9px); user-select: none; }
+.vignette { position: absolute; inset: 0;
+  background: radial-gradient(ellipse 70% 55% at 50% 45%, rgba(10,10,10,.35) 0%, rgba(10,10,10,.86) 62%, var(--bg) 100%); }
+
+.layout { position: relative; z-index: 2; display: grid;
+  grid-template-columns: 232px minmax(0,1fr); min-height: 100vh; min-width: 1280px; }
+.spacer { flex: 1; }
+
+/* ── Sidebar ─────────────────────────────────────────────────────────── */
+.avatar { width: 36px; height: 36px; border-radius: 50%; flex: none; object-fit: cover;
+  background: #181818; border: 1px solid var(--line); display: block; }
+.avatar-fallback { display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), #FF6D00);
+  color: var(--bg); font-weight: 700; font-size: 14px; }
+.avatar.sm { width: 28px; height: 28px; }
+.avatar.lg { width: 40px; height: 40px; font-size: 15px; }
+.sidebar { border-right: 1px solid var(--line-hard); background: rgba(14,14,14,.82);
+  backdrop-filter: blur(14px); display: flex; flex-direction: column;
+  padding: 26px 0 20px; position: sticky; top: 0; height: 100vh; }
+.brand { display: flex; align-items: center; gap: 11px; padding: 0 22px 30px; }
+.brand-mark { width: 30px; height: 30px; display: grid; place-items: center;
+  background: var(--accent); box-shadow: 0 0 18px rgba(229,57,53,.45); }
+.brand-mark .ms { font-size: 19px; color: var(--bg); }
+.brand-name { font-size: 14px; font-weight: 700; letter-spacing: .14em; }
+.brand-sub { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
+  letter-spacing: .1em; margin-top: 3px; }
+
+.rail-label { font-family: var(--mono); font-size: 9.5px; color: var(--fg-rail);
+  letter-spacing: .18em; padding: 0 22px 10px; }
+.rail-label.tight { padding: 0 0 14px; letter-spacing: .16em; }
+
+.nav { display: flex; flex-direction: column; }
+.nav-item { display: flex; align-items: center; gap: 13px; padding: 11px 22px; cursor: pointer;
+  border-left: 2px solid transparent; color: var(--fg-soft); font-size: 13.5px;
+  transition: background .14s ease, color .14s ease; }
+.nav-item:hover { background: rgba(229,57,53,.07); color: var(--fg); }
+.nav-item.active { border-left-color: var(--accent); background: rgba(229,57,53,.09);
+  color: #fff; font-weight: 500; }
+.nav-item .ms { font-size: 19px; }
+.nav-item .lbl { flex: 1; }
+.nav-count { font-family: var(--mono); font-size: 10px; color: var(--accent);
+  border: 1px solid rgba(229,57,53,.35); padding: 1px 6px; }
+
+.engine-box { margin: 0 18px 14px; padding: 14px; border: 1px solid var(--line-hard);
+  background: rgba(26,26,26,.6); }
+.engine-status { display: flex; align-items: center; gap: 8px; margin-bottom: 9px;
+  font-size: 12px; color: #C9C9C9; }
+.engine-meta { font-family: var(--mono); font-size: 10.5px; color: var(--fg-faint); line-height: 1.7; }
+
+.dot { width: 6px; height: 6px; flex: none; display: inline-block; background: var(--accent);
+  box-shadow: 0 0 8px var(--accent); }
+.dot.pulse { animation: qrPulse 1.8s ease-in-out infinite; }
+.dot.idle { background: #333; box-shadow: none; animation: none; }
+.dot.err { background: var(--accent-hot); box-shadow: 0 0 8px var(--accent-hot); animation: none; }
+.dot.warn { background: var(--warn); box-shadow: 0 0 8px var(--warn); }
+.dot.ok { background: #4A4A4A; box-shadow: none; animation: none; }
+
+.settings-link { display: flex; align-items: center; gap: 12px; padding: 12px 22px 0;
+  margin-top: 4px; border-top: 1px solid var(--line-hard); color: var(--fg-faint);
+  font-size: 12.5px; cursor: pointer; transition: color .14s ease; }
+.settings-link:hover, .settings-link.active { color: var(--fg); }
+
+/* ── Topbar ──────────────────────────────────────────────────────────── */
+.main { display: flex; flex-direction: column; min-width: 0; }
+.topbar { display: flex; align-items: center; gap: 20px; padding: 22px 34px;
+  border-bottom: 1px solid var(--line-hard); background: rgba(10,10,10,.5);
+  backdrop-filter: blur(10px); position: sticky; top: 0; z-index: 5; }
+.titles h1 { margin: 0; font-size: 21px; font-weight: 500; letter-spacing: -.01em; }
+.subtitle { font-family: var(--mono); font-size: 10.5px; color: var(--fg-ghost);
+  margin-top: 5px; letter-spacing: .06em; }
+
+.chip { display: flex; align-items: center; gap: 10px; padding: 7px 13px;
+  border: 1px solid #232323; background: rgba(26,26,26,.7); cursor: pointer;
+  font-family: inherit; transition: border-color .16s ease; }
+.chip:hover { border-color: rgba(229,57,53,.5); }
+.chip .ms { font-size: 17px; color: var(--fg-faint); }
+.chip-label { font-family: var(--mono); font-size: 11.5px; color: var(--fg-mute); }
+.chip-value { font-family: var(--mono); font-size: 13px; font-weight: 500; color: var(--accent); }
+
+.actions { display: flex; align-items: center; gap: 10px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; font-family: Roboto, sans-serif;
+  font-size: 13px; font-weight: 500; cursor: pointer; transition: all .16s ease; border-radius: 0; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn .ms { font-size: 18px; }
+.btn-ghost { padding: 10px 16px; border: 1px solid #2A2A2A; background: transparent; color: #C9C9C9; }
+.btn-ghost:hover:not(:disabled) { border-color: var(--accent); color: #fff; background: rgba(229,57,53,.09); }
+.btn-ghost.small { padding: 6px 11px; font-size: 11.5px; }
+.btn-ghost.small .ms { font-size: 15px; }
+.btn-primary { padding: 10px 20px; border: none; background: var(--accent); color: var(--bg);
+  font-weight: 700; letter-spacing: .02em; box-shadow: 0 0 22px rgba(229,57,53,.32); }
+.btn-primary:hover:not(:disabled) { background: var(--accent-hot); box-shadow: 0 0 30px rgba(255,23,68,.55); }
+.btn-outline { padding: 9px 16px; border: 1px solid #2A2A2A; background: transparent;
+  color: var(--fg-mute); font-size: 12.5px; flex: none; }
+.btn-outline:hover:not(:disabled) { border-color: var(--accent); color: #fff; }
+
+/* ── Content ─────────────────────────────────────────────────────────── */
+.content { flex: 1; padding: 30px 34px 40px; }
+.view { display: flex; flex-direction: column; gap: 26px; animation: qrFade .18s ease; }
+.view[hidden] { display: none; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px,1fr)); gap: 16px; }
+.stat { padding: 20px; border: 1px solid var(--line); background: var(--panel);
+  backdrop-filter: blur(8px); transition: all .18s ease; }
+.stat:hover { border-color: rgba(229,57,53,.4); box-shadow: 0 0 24px rgba(229,57,53,.1); }
+.stat-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.stat-label { font-family: var(--mono); font-size: 10px; color: var(--fg-ghost); letter-spacing: .16em; }
+.stat-value { display: flex; align-items: baseline; gap: 6px; }
+.stat-value b { font-size: 32px; font-weight: 300; letter-spacing: -.02em; }
+.stat-value span { font-family: var(--mono); font-size: 12px; color: var(--fg-ghost); }
+.stat-note { font-size: 11.5px; color: var(--fg-faint); margin-top: 7px; }
+
+.split { display: grid; grid-template-columns: 1.55fr 1fr; gap: 20px; align-items: start; }
+.side-col { display: flex; flex-direction: column; gap: 20px; }
+
+.panel { border: 1px solid var(--line); background: var(--panel); backdrop-filter: blur(8px); }
+.panel.pad { padding: 18px; }
+.log-panel { background: var(--panel-solid); }
+.panel-head { display: flex; align-items: center; gap: 12px; padding: 15px 20px;
+  border-bottom: 1px solid var(--line); }
+.panel-title { font-size: 14px; font-weight: 500; }
+.panel-meta { font-family: var(--mono); font-size: 10.5px; color: var(--fg-ghost); letter-spacing: .1em; }
+
+.table-head, .row { display: grid; grid-template-columns: 170px minmax(180px,1fr) 118px 96px;
+  gap: 14px; padding: 11px 20px; }
+.table-head.wide, .row.wide {
+  grid-template-columns: minmax(200px,1.25fr) minmax(180px,1.15fr) minmax(140px,.9fr)
+                         112px 58px 52px 92px;
+  gap: 12px; }
+.table-head.quests, .row.quests { grid-template-columns: 180px minmax(160px,1fr) 88px 58px 118px 96px; }
+.table-head.skipped, .row.skipped { grid-template-columns: 180px minmax(160px,1fr) 220px; }
+.table-head { border-bottom: 1px solid var(--line-soft); font-family: var(--mono);
+  font-size: 9.5px; color: var(--fg-rail); letter-spacing: .16em; }
+.table-head .right, .row .right { text-align: right; }
+.row { align-items: center; padding: 15px 20px; border-bottom: 1px solid var(--line-soft);
+  transition: background .14s ease; }
+.row.clickable { cursor: pointer; }
+.row.clickable:hover { background: rgba(229,57,53,.05); }
+.row.open { background: rgba(229,57,53,.05); }
+
+.row-who { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.row-who .who { min-width: 0; }
+.row-who .nm { font-size: 12.5px; color: var(--fg-dim); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.row-who .tk { font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
+  margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Accounts view – names, e-mails and proxies are shown in full, never
+   truncated, so wrapping is the intended behaviour here. */
+.row-acc { display: flex; align-items: center; gap: 11px; min-width: 0; }
+.row-acc .who { min-width: 0; }
+.row-acc .nm { font-size: 13px; color: var(--fg); line-height: 1.35;
+  overflow-wrap: anywhere; }
+.row-acc .tag { font-family: var(--mono); font-size: 10px; color: var(--fg-ghost);
+  margin-top: 3px; overflow-wrap: anywhere; }
+
+.cell-email { min-width: 0; font-family: var(--mono); font-size: 11px;
+  color: var(--fg-dim); line-height: 1.45; overflow-wrap: anywhere; }
+.cell-email.none { font-family: Roboto, sans-serif; font-style: italic;
+  font-size: 11.5px; color: var(--fg-rail); }
+.cell-email .id { display: block; font-size: 9.5px; color: var(--fg-rail); margin-top: 3px; }
+
+.cell-proxy { min-width: 0; font-family: var(--mono); font-size: 10.5px;
+  color: var(--fg-mute); line-height: 1.45; overflow-wrap: anywhere; }
+.cell-proxy .ip { display: block; font-size: 9.5px; margin-top: 3px; color: var(--fg-ghost); }
+.cell-proxy .ip.live { color: var(--accent); }
+.cell-proxy .ip.bad { color: var(--accent-hot); }
+.cell-proxy.off { font-family: Roboto, sans-serif; font-style: italic;
+  font-size: 11.5px; color: var(--fg-rail); }
+
+.row-actions { display: flex; align-items: center; gap: 6px; justify-content: flex-end;
+  position: relative; }
+.menu-wrap { position: relative; }
+.menu-btn { width: 28px; height: 28px; display: grid; place-items: center;
+  border: 1px solid #2A2A2A; background: transparent; color: var(--fg-mute); cursor: pointer; }
+.menu-btn:hover, .menu-btn.open { border-color: var(--accent); color: #fff; }
+.menu-btn .ms { font-size: 16px; }
+.menu-dropdown { position: absolute; top: 32px; right: 0; z-index: 30; min-width: 186px;
+  border: 1px solid var(--line); background: rgba(17,17,17,.98);
+  box-shadow: 0 10px 30px rgba(0,0,0,.55); animation: qrFade .12s ease; }
+.menu-dropdown .sep { height: 1px; background: var(--line); margin: 4px 0; }
+.menu-dropdown button:disabled { opacity: .4; cursor: not-allowed; }
+.menu-dropdown button:disabled:hover { background: transparent; color: var(--fg-dim); }
+.menu-dropdown button { display: flex; align-items: center; gap: 8px; width: 100%;
+  padding: 9px 12px; background: transparent; border: none; color: var(--fg-dim);
+  font-size: 12px; font-family: Roboto, sans-serif; cursor: pointer; text-align: left; }
+.menu-dropdown button:hover { background: rgba(229,57,53,.12); color: #fff; }
+.menu-dropdown button .ms { font-size: 15px; }
+.row-quest { min-width: 0; }
+.row-quest b { display: block; font-size: 13px; font-weight: 400; color: var(--fg-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row-quest i { display: block; font-style: normal; font-family: var(--mono); font-size: 9.5px;
+  color: var(--fg-ghost); letter-spacing: .1em; margin-top: 4px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bar { height: 3px; background: #232323; overflow: hidden; }
+.bar > i { display: block; height: 100%; transition: width .4s ease; }
+.row-progress small { display: block; font-family: var(--mono); font-size: 10px;
+  color: var(--fg-soft); margin-top: 6px; }
+.num { font-family: var(--mono); font-size: 12px; color: var(--fg-mute); }
+.num.orb { color: var(--orb); }
+
+.badge { display: inline-block; padding: 3px 9px; border: 1px solid transparent;
+  font-family: var(--mono); font-size: 9.5px; letter-spacing: .1em; white-space: nowrap; }
+.badge.running, .badge.starting { border-color: rgba(229,57,53,.4); color: var(--accent); background: rgba(229,57,53,.1); }
+.badge.done { border-color: #2A2A2A; color: var(--fg-mute); }
+.badge.error { border-color: rgba(255,23,68,.45); color: var(--accent-hot); background: rgba(255,23,68,.12); }
+.badge.idle, .badge.stopped, .badge.pending, .badge.waiting { border-color: #252525; color: var(--fg-faint); }
+
+.row-detail { padding: 4px 20px 18px; border-bottom: 1px solid var(--line-soft);
+  animation: qrFade .18s ease; }
+.detail-grid { display: grid; grid-template-columns: 1.2fr 1fr; gap: 22px; }
+.detail-col > .rail-label { padding-left: 0; }
+
+.quest-line { display: flex; align-items: center; gap: 10px; padding: 7px 0;
+  border-bottom: 1px solid rgba(31,31,31,.6); font-size: 12.5px; }
+.quest-line:last-child { border-bottom: none; }
+.quest-line .qn { flex: 1; min-width: 0; color: var(--fg-dim); overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.qt { display: inline-block; font-family: var(--mono); font-size: 9.5px; color: var(--fg-ghost);
+  border: 1px solid #232323; padding: 1px 6px; white-space: nowrap; }
+.quest-line .qp { font-family: var(--mono); font-size: 10.5px; color: var(--fg-soft);
+  white-space: nowrap; min-width: 104px; text-align: right; }
+.quest-line .qp.err { color: var(--accent-hot); cursor: help; }
+.quest-line .qp.wait { color: var(--warn); }
+.quest-line .qorb { font-family: var(--mono); font-size: 10.5px; color: var(--orb);
+  min-width: 30px; text-align: right; }
+
+.notice { padding: 10px 12px; font-size: 12.5px; margin-bottom: 14px; line-height: 1.6; }
+.notice.hint { background: rgba(229,57,53,.09); border: 1px solid rgba(229,57,53,.3); color: #FFB3B0; }
+.notice.captcha { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.35); color: #E3B341; }
+
+.empty { padding: 34px 20px; text-align: center; color: var(--fg-faint);
+  font-size: 12.5px; line-height: 1.7; }
+.empty code { font-family: var(--mono); color: var(--fg-mute); }
+
+/* ── Log ─────────────────────────────────────────────────────────────── */
+.log-body { padding: 14px 18px; height: 268px; overflow: auto; font-family: var(--mono);
+  font-size: 11px; line-height: 1.95; }
+.log-body.tall { height: calc(100vh - 260px); }
+.log-line { display: flex; gap: 9px; }
+.log-line .t { color: #3F3F3F; flex: none; }
+.log-line .g { color: var(--fg-ghost); flex: none; max-width: 110px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; }
+.log-line .m { color: #8A8A8A; min-width: 0; word-break: break-word; }
+.log-line.ok .g { color: var(--accent); }
+.log-line.ok .m { color: var(--fg-dim); }
+.log-line.err .g { color: var(--accent-hot); }
+.log-line.err .m { color: #FF8A80; }
+
+/* ── Task types ──────────────────────────────────────────────────────── */
+.task-list { display: flex; flex-direction: column; gap: 11px; }
+.task { display: flex; align-items: center; gap: 11px; }
+.task .ms { font-size: 17px; }
+.task-name { font-family: var(--mono); font-size: 11px; color: var(--fg-mute); flex: 1; }
+.task-eta { font-size: 11px; }
+.task.fast .ms, .task.fast .task-eta { color: var(--accent); }
+.task.slow .ms, .task.slow .task-eta { color: var(--fg-soft); }
+
+/* ── Resource bar ────────────────────────────────────────────────────── */
+.memory-bar { display: flex; align-items: center; gap: 18px; padding: 18px 22px;
+  border: 1px solid rgba(229,57,53,.22);
+  background: linear-gradient(90deg, rgba(229,57,53,.07) 0%, rgba(26,26,26,.8) 55%);
+  box-shadow: 0 0 34px rgba(229,57,53,.07); }
+.memory-text { flex: 1; min-width: 0; }
+.memory-main { font-size: 13.5px; color: var(--fg-dim); }
+.memory-main b { color: var(--accent); font-weight: 500; }
+.memory-sub { font-family: var(--mono); font-size: 10.5px; color: var(--fg-ghost); margin-top: 5px; }
+.meter { position: relative; width: 190px; height: 3px; background: #232323; overflow: hidden; flex: none; }
+.meter-fill { position: absolute; inset: 0; width: 0%; background: var(--accent);
+  box-shadow: 0 0 10px var(--accent); transition: width .4s ease; }
+.meter-sweep { position: absolute; top: 0; bottom: 0; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255,23,68,.85), transparent);
+  animation: qrSweep 2.4s linear infinite; }
+.memory-bar.stale .meter-sweep { display: none; }
+
+/* ── Ustawienia ──────────────────────────────────────────────────────── */
+.hint-text { margin: 0 0 14px; font-size: 12.5px; color: var(--fg-faint); line-height: 1.6; }
+.hint-text code { font-family: var(--mono); color: var(--fg-mute); }
+.field { display: flex; align-items: center; gap: 16px; }
+.field input[type=range] { flex: 1; -webkit-appearance: none; appearance: none;
+  height: 3px; background: #232323; border: none; cursor: pointer; }
+.field input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none;
+  width: 12px; height: 12px; background: var(--accent); border: none;
+  box-shadow: 0 0 10px rgba(229,57,53,.6); cursor: pointer; }
+.field input[type=range]::-moz-range-thumb { width: 12px; height: 12px; background: var(--accent);
+  border: none; border-radius: 0; box-shadow: 0 0 10px rgba(229,57,53,.6); cursor: pointer; }
+.field input[type=number] { background: rgba(10,10,10,.8); border: 1px solid #2A2A2A;
+  color: var(--fg); font-family: var(--mono); font-size: 13px; padding: 8px 10px; width: 90px; }
+.field input[type=number]:focus { outline: none; border-color: var(--accent); }
+.field-note { font-family: var(--mono); font-size: 11px; color: var(--fg-ghost); }
+
+.toggles { display: flex; flex-direction: column; gap: 12px; }
+.toggle { display: flex; align-items: flex-start; gap: 14px; padding: 14px;
+  border: 1px solid var(--line); background: rgba(10,10,10,.35); cursor: pointer;
+  transition: border-color .16s ease, background .16s ease; }
+.toggle:hover { border-color: rgba(229,57,53,.35); }
+.toggle.on { border-color: rgba(229,57,53,.45); background: rgba(229,57,53,.06); }
+.switch { width: 34px; height: 16px; flex: none; background: #232323; position: relative;
+  margin-top: 2px; transition: background .16s ease; }
+.switch::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px;
+  background: var(--fg-faint); transition: all .16s ease; }
+.toggle.on .switch { background: rgba(229,57,53,.3); }
+.toggle.on .switch::after { left: 20px; background: var(--accent); box-shadow: 0 0 10px var(--accent); }
+.toggle-text b { display: block; font-size: 13px; font-weight: 500; color: var(--fg-dim); }
+.toggle-text span.desc { display: block; font-size: 11.5px; color: var(--fg-faint);
+  margin-top: 4px; line-height: 1.6; }
+.toggle .exp { font-family: var(--mono); font-size: 9.5px; color: var(--warn);
+  border: 1px solid rgba(210,153,34,.35); padding: 1px 5px; margin-left: 7px; }
+
+/* ── Network / proxies ───────────────────────────────────────────────── */
+.code-block { font-family: var(--mono); font-size: 11px; color: var(--fg-mute);
+  background: rgba(10,10,10,.6); border: 1px solid var(--line); padding: 12px 14px;
+  margin: 0 0 14px; line-height: 1.8; overflow-x: auto; }
+.link-list { margin: 0 0 14px; padding-left: 18px; font-size: 12.5px; color: var(--fg-faint);
+  line-height: 1.75; }
+.link-list li { margin-bottom: 7px; }
+.link-list b { color: var(--fg-dim); font-weight: 500; }
+.proxy-status { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+.proxy-stat { flex: 1; min-width: 150px; padding: 12px 14px; border: 1px solid var(--line);
+  background: rgba(10,10,10,.35); }
+.proxy-stat .k { font-family: var(--mono); font-size: 9.5px; color: var(--fg-rail);
+  letter-spacing: .16em; }
+.proxy-stat .v { font-size: 18px; font-weight: 300; margin-top: 7px; }
+.proxy-stat .v.hot { color: var(--accent); }
+.proxy-stat .v.warn { color: var(--warn); }
+.proxy-note { width: 100%; padding: 10px 12px; font-size: 12px; line-height: 1.6; }
+.proxy-note.warn { background: rgba(210,153,34,.1); border: 1px solid rgba(210,153,34,.35);
+  color: #E3B341; }
+.proxy-note.err { background: rgba(255,23,68,.1); border: 1px solid rgba(255,23,68,.35);
+  color: #FF8A80; }
+.proxy-note.ok { background: rgba(229,57,53,.07); border: 1px solid rgba(229,57,53,.3);
+  color: var(--fg-dim); }
+.proxy-note:not(.warn):not(.err):not(.ok) { border: 1px solid var(--line);
+  background: rgba(10,10,10,.35); color: var(--fg-faint); }
+.proxy-note ul { margin: 7px 0 0; padding-left: 18px; font-family: var(--mono); font-size: 11px; }
+
+/* ── Toast ───────────────────────────────────────────────────────────── */
+.toast { position: fixed; right: 24px; bottom: 24px; z-index: 50;
+  padding: 12px 18px; border: 1px solid var(--line); background: rgba(17,17,17,.97);
+  color: var(--fg-dim); font-size: 12.5px; box-shadow: 0 0 30px rgba(0,0,0,.5);
+  animation: qrFade .18s ease; }
+.toast[hidden] { display: none; }
+.toast.err { border-color: rgba(255,23,68,.45); color: #FF8A80; }
+.toast.ok { border-color: rgba(229,57,53,.4); }
+</style>
+</head>
+<body>
+
+<div class="backdrop">
+  <canvas id="qr-matrix"></canvas>
+  <div class="skull">☠</div>
+  <div class="vignette"></div>
+</div>
+
+<div class="layout">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <div class="brand-mark"><span class="ms">bolt</span></div>
+      <div>
+        <div class="brand-name">QUEST<span class="accent">//</span>RUNNER</div>
+        <div class="brand-sub">LOCAL · v2.0.0</div>
+      </div>
+    </div>
+
+    <div class="rail-label">OPERATIONS</div>
+    <nav class="nav" id="nav"></nav>
+
+    <div class="spacer"></div>
+
+    <div class="engine-box">
+      <div class="rail-label tight">ENGINE</div>
+      <div class="engine-status">
+        <span class="dot idle" id="conn-dot"></span>
+        <span id="conn-label">connecting…</span>
+      </div>
+      <div class="engine-meta" id="conn-meta">accounts —<br>updated —</div>
+    </div>
+
+    <div class="settings-link" id="settings-link">
+      <span class="ms">settings</span><span>Settings</span>
+    </div>
+  </aside>
+
+  <main class="main">
+
+    <header class="topbar">
+      <div class="titles">
+        <h1 id="view-title">Dashboard</h1>
+        <div class="subtitle" id="view-sub">tokens.txt · 0 accounts · Europe/Warsaw</div>
+      </div>
+      <div class="spacer"></div>
+
+      <button class="chip" id="chip-conc" title="Click to change concurrency">
+        <span class="ms">layers</span>
+        <span class="chip-label">CONCURRENCY</span>
+        <span class="chip-value" id="chip-conc-val">05</span>
+      </button>
+
+      <div class="actions">
+        <button class="btn btn-ghost" id="btn-reload" title="Re-reads tokens.txt and ip.txt">
+          <span class="ms">refresh</span> Reload lists
+        </button>
+        <button class="btn btn-primary" id="btn-start-all">
+          <span class="ms">play_arrow</span> Start all
+        </button>
+      </div>
+    </header>
+
+    <div class="content">
+
+      <!-- ── DASHBOARD ───────────────────────────────────────────────── -->
+      <section class="view" data-view="dashboard">
+        <section class="stats" id="stats"></section>
+
+        <section class="split">
+          <div class="panel">
+            <div class="panel-head">
+              <span class="ms accent">account_tree</span>
+              <span class="panel-title">Active sessions</span>
+              <span class="spacer"></span>
+              <span class="panel-meta" id="sessions-meta">0 / 0 ACCOUNTS</span>
+            </div>
+            <div class="table-head">
+              <span>ACCOUNT</span><span>QUEST</span><span>PROGRESS</span><span class="right">STATUS</span>
+            </div>
+            <div id="rows"></div>
+          </div>
+
+          <div class="side-col">
+            <div class="panel log-panel">
+              <div class="panel-head">
+                <span class="ms accent">terminal</span>
+                <span class="panel-title">Live log</span>
+                <span class="spacer"></span>
+                <span class="dot idle" id="log-dot"></span>
+              </div>
+              <div class="log-body" id="logs"></div>
+            </div>
+
+            <div class="panel pad">
+              <div class="rail-label tight">TASK TYPES</div>
+              <div class="task-list" id="tasks"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="memory-bar stale" id="memory-bar">
+          <span class="ms accent big">memory</span>
+          <div class="memory-text">
+            <div class="memory-main" id="memory-main">—</div>
+            <div class="memory-sub" id="memory-sub">—</div>
+          </div>
+          <div class="meter"><div class="meter-fill" id="memory-fill"></div><div class="meter-sweep"></div></div>
+          <button class="btn btn-outline" id="btn-stop-all">Stop all</button>
+        </section>
+      </section>
+
+      <!-- ── ACCOUNTS ────────────────────────────────────────────────── -->
+      <section class="view" data-view="accounts" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="ms accent">key</span>
+            <span class="panel-title">Accounts from tokens.txt</span>
+            <span class="spacer"></span>
+            <button class="btn btn-ghost small" id="btn-refresh-accounts"
+              title="Reads name, e-mail and avatar for every account (one request each)">
+              <span class="ms">badge</span> Load account details
+            </button>
+            <span class="panel-meta" id="accounts-meta">0 ACCOUNTS</span>
+          </div>
+          <div class="table-head wide">
+            <span>ACCOUNT</span><span>E-MAIL</span><span>PROXY</span><span>STATE</span>
+            <span>QUESTS</span><span>ORBS</span><span class="right">ACTIONS</span>
+          </div>
+          <div id="rows-full"></div>
+        </div>
+      </section>
+
+      <!-- ── QUESTS ──────────────────────────────────────────────────── -->
+      <section class="view" data-view="quests" hidden>
+        <div class="panel">
+          <div class="panel-head">
+            <span class="ms accent">flag</span>
+            <span class="panel-title">Quests</span>
+            <span class="spacer"></span>
+            <span class="panel-meta" id="quests-meta">0 ACTIVE</span>
+          </div>
+          <div class="table-head quests">
+            <span>ACCOUNT</span><span>QUEST</span><span>TYPE</span><span>ORBS</span>
+            <span>PROGRESS</span><span class="right">STATUS</span>
+          </div>
+          <div id="quests-list"></div>
+        </div>
+        <div class="panel" id="skipped-panel" hidden>
+          <div class="panel-head">
+            <span class="ms">block</span>
+            <span class="panel-title">Skipped – no orbs</span>
+            <span class="spacer"></span>
+            <span class="panel-meta" id="skipped-meta">0</span>
+          </div>
+          <div class="table-head skipped">
+            <span>ACCOUNT</span><span>QUEST</span><span>REWARD</span>
+          </div>
+          <div id="skipped-list"></div>
+        </div>
+      </section>
+
+      <!-- ── LOGS ────────────────────────────────────────────────────── -->
+      <section class="view" data-view="logs" hidden>
+        <div class="panel log-panel">
+          <div class="panel-head">
+            <span class="ms accent">terminal</span>
+            <span class="panel-title">Full log – all accounts</span>
+            <span class="spacer"></span>
+            <span class="panel-meta" id="logs-meta">0 ENTRIES</span>
+          </div>
+          <div class="log-body tall" id="logs-full"></div>
+        </div>
+      </section>
+
+      <!-- ── SETTINGS ────────────────────────────────────────────────── -->
+      <section class="view" data-view="settings" hidden>
+        <div class="panel pad">
+          <div class="rail-label tight">CONCURRENCY</div>
+          <p class="hint-text">How many accounts run at the same time with "Start all".
+            Each Chromium context uses ~350 MB RAM.</p>
+          <div class="field">
+            <input type="range" id="conc-range" min="1" max="50" step="1">
+            <input type="number" id="conc-input" min="1" max="50">
+            <span class="field-note" id="conc-note"></span>
+          </div>
+        </div>
+
+        <div class="panel pad">
+          <div class="rail-label tight">RUN MODE</div>
+          <div class="toggles">
+            <div class="toggle" id="tg-headed">
+              <span class="switch"></span>
+              <div class="toggle-text">
+                <b>Show browser windows</b>
+                <span class="desc">Disables headless mode. Needed when you must solve a CAPTCHA
+                  manually – the session is remembered in the account's profile.</span>
+              </div>
+            </div>
+            <div class="toggle" id="tg-onlyorbs">
+              <span class="switch"></span>
+              <div class="toggle-text">
+                <b>Orb quests only</b>
+                <span class="desc">Skips quests that only reward cosmetics
+                  (avatar frame, profile effect).</span>
+              </div>
+            </div>
+            <div class="toggle" id="tg-desktop">
+              <span class="switch"></span>
+              <div class="toggle-text">
+                <b>Desktop mode <span class="exp">EXPERIMENTAL</span></b>
+                <span class="desc">Spoofs the session as the desktop client. Required for
+                  game-type quests, but Discord may then stop returning the quest list.</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- ── Network / proxies ─────────────────────────────────────── -->
+        <div class="panel pad">
+          <div class="rail-label tight">NETWORK</div>
+          <p class="hint-text">Each account can leave through its own IP address, which is
+            what keeps Discord from rate limiting (<code>429</code>) the whole batch when
+            several accounts run at once. Put one proxy per line in
+            <code>ip.txt</code> next to <code>server.js</code> – account #1 uses proxy #1,
+            account #2 uses proxy #2, and so on.</p>
+
+          <div class="toggles">
+            <div class="toggle" id="tg-proxies">
+              <span class="switch"></span>
+              <div class="toggle-text">
+                <b>Route every account through its own proxy</b>
+                <span class="desc" id="proxy-desc">Reads <code>ip.txt</code> on start.</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="proxy-status" id="proxy-status"></div>
+
+          <div style="display:flex;gap:10px;margin-top:14px">
+            <button class="btn btn-ghost small" id="btn-reload-proxies">
+              <span class="ms">refresh</span> Reload ip.txt
+            </button>
+            <button class="btn btn-ghost small" id="btn-test-proxies"
+              title="Dials every proxy in ip.txt and reports its exit IP">
+              <span class="ms">network_check</span> Test all proxies
+            </button>
+          </div>
+
+          <div class="rail-label tight" style="margin-top:26px">ACCEPTED FORMATS</div>
+          <pre class="code-block">host:port
+host:port:user:pass
+user:pass@host:port
+host:port@user:pass          (Webshare's list designer default)
+user:pass:host:port
+http://user:pass@host:port
+socks5://host:port</pre>
+          <p class="hint-text">No scheme means HTTP. Chromium cannot authenticate to SOCKS
+            proxies, so use HTTP proxies whenever a login is required. Lines starting with
+            <code>#</code> are ignored.</p>
+
+          <div class="rail-label tight" style="margin-top:26px">WHERE TO GET PROXIES</div>
+          <p class="hint-text">Discord treats datacenter IP ranges with suspicion, so
+            <b>residential</b> or <b>mobile</b> proxies work far better than cheap datacenter
+            ones. Ask the vendor for <b>sticky sessions</b> – an IP that stays the same for
+            10+ minutes – because a proxy that rotates mid-quest breaks long
+            <code>PLAY_ON_DESKTOP</code> runs.</p>
+          <ul class="link-list">
+            <li><b>Residential, sticky sessions</b> – IPRoyal, Decodo (formerly Smartproxy),
+              SOAX, Bright Data, Oxylabs, NetNut, Proxy-Cheap. Sold per GB; a quest run uses
+              very little traffic, so the smallest plan usually covers a lot of accounts.</li>
+            <li><b>Cheap datacenter / ISP</b> – Webshare (10 free proxies after signing up),
+              ProxyScrape, Storm Proxies. Fine for testing that the wiring works, more likely
+              to be flagged in day-to-day use.</li>
+            <li><b>Mobile (4G/5G)</b> – the most trusted by Discord and the most expensive.
+              Worth it only for accounts you care about.</li>
+            <li><b>Free, and actually usable</b> – Webshare's free plan (10 proxies, ~1 GB
+              a month, handed out as <code>host:port:user:pass</code>), a proxy you run
+              yourself on an always-free cloud VM (Oracle Cloud, Google Cloud, AWS), or your
+              phone's hotspot for one mobile IP.</li>
+          </ul>
+          <p class="hint-text"><b>Free public proxy lists are not worth it.</b> Most entries
+            are already dead, and the ones that answer are shared with everyone else abusing
+            them – Discord has usually flagged those IPs long ago, so you trade a
+            <code>429</code> for a CAPTCHA or a locked account. A hostile proxy cannot read
+            your HTTPS traffic, but it can refuse it or try to intercept it, which just
+            breaks the run. Hit "Test all proxies" after pasting such a list to see how few
+            of them answer at all.</p>
+        </div>
+      </section>
+
+    </div>
+  </main>
+</div>
+
+<div class="toast" id="toast" hidden></div>
+
+<script>
+/* ── Icons: fallback when Google Fonts is unreachable ──────────────────── */
+if (document.fonts && document.fonts.load) {
+  const degrade = () => document.documentElement.classList.add('no-icons');
+  document.fonts.load("18px 'Material Symbols Rounded'", 'settings')
+    .then(f => { if (!f.length) degrade(); }).catch(degrade);
+}
+
+/* ── Background: falling-character rain ─────────────────────────────────── */
+(function () {
+  const c = document.getElementById('qr-matrix');
+  if (!c || !c.getContext) return;
+  const ctx = c.getContext('2d');
+  const chars = '0179432586';
+  const fs = 15;
+  let W = 0, H = 0, cols = 0, drops = [], speeds = [];
+  const resize = () => {
+    W = c.width = c.offsetWidth || 1600;
+    H = c.height = c.offsetHeight || 900;
+    cols = Math.max(1, Math.floor(W / fs));
+    drops = Array.from({ length: cols }, () => Math.random() * -H);
+    speeds = Array.from({ length: cols }, () => 0.7 + Math.random() * 1.5);
+  };
+  resize();
+  window.addEventListener('resize', resize);
+  const draw = () => {
+    ctx.fillStyle = 'rgba(10,10,10,0.075)';
+    ctx.fillRect(0, 0, W, H);
+    ctx.font = '300 ' + fs + "px 'Roboto Mono', monospace";
+    ctx.shadowColor = 'rgba(229,57,53,0.85)';
+    for (let i = 0; i < cols; i++) {
+      if (Math.random() > 0.72) {
+        ctx.shadowBlur = 7;
+        ctx.fillStyle = 'rgba(255,70,70,0.5)';
+        ctx.fillText(chars[(Math.random() * chars.length) | 0], i * fs, drops[i]);
+      }
+      drops[i] += speeds[i];
+      if (drops[i] > H + 40 && Math.random() > 0.97) drops[i] = -20;
+    }
+    ctx.shadowBlur = 0;
+    requestAnimationFrame(draw);
+  };
+  draw();
+})();
+
+/* ── Constants ─────────────────────────────────────────────────────────── */
+const NAV = [
+  { id: 'dashboard', icon: 'space_dashboard', label: 'Dashboard', title: 'Dashboard' },
+  { id: 'accounts',  icon: 'key',             label: 'Accounts',  title: 'Accounts' },
+  { id: 'quests',    icon: 'flag',            label: 'Quests',    title: 'Quests' },
+  { id: 'logs',      icon: 'terminal',        label: 'Logs',      title: 'Live log' },
+  { id: 'settings',  icon: 'settings',        label: 'Settings',  title: 'Settings' },
+];
+
+const STATUS_LABEL = {
+  idle: 'IDLE', starting: 'STARTING', running: 'RUNNING',
+  done: 'DONE', error: 'ERROR', stopped: 'STOPPED',
+};
+const TASK_META = {
+  WATCH_VIDEO:           { icon: 'movie',          eta: '~15s',   fast: true },
+  WATCH_VIDEO_ON_MOBILE: { icon: 'smartphone',     eta: '~15s',   fast: true },
+  PLAY_ON_DESKTOP:       { icon: 'sports_esports', eta: '15 min', fast: false },
+  STREAM_ON_DESKTOP:     { icon: 'cast',           eta: '15 min', fast: false },
+  PLAY_ACTIVITY:         { icon: 'apps',           eta: '15 min', fast: false },
+};
+const TASK_LABEL = {
+  WATCH_VIDEO: 'video', WATCH_VIDEO_ON_MOBILE: 'video',
+  PLAY_ON_DESKTOP: 'game', STREAM_ON_DESKTOP: 'stream', PLAY_ACTIVITY: 'activity',
+};
+const RAM_PER_CONTEXT = 350;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c =>
+  ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const pad2 = n => String(n).padStart(2, '0');
+const fmtTime = s => { s = Math.max(0, Math.round(s)); const m = Math.floor(s / 60);
+  return m > 0 ? m + 'm ' + (s % 60) + 's' : s + 's'; };
+const fmtClock = ts => new Date(ts).toTimeString().slice(0, 8);
+const post = (url, body) => fetch(url, { method: 'POST',
+  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body || {}) });
+
+function rewardLabel(rewards) {
+  if (!rewards || !rewards.length) return 'no reward';
+  const names = rewards.map(r => r.name).filter(Boolean);
+  return names.length ? names.join(', ') : 'cosmetic reward';
+}
+const accName = a => a.username || 'Account ' + (+a.id + 1);
+/** Display name as shown in Discord, in full. */
+const accDisplayName = a => a.globalName || a.username || 'Account ' + (+a.id + 1);
+/** @handle underneath it – falls back to the masked token when unknown. */
+const accHandle = a => a.username ? '@' + a.username : a.label;
+const isBusy = a => a.status === 'running' || a.status === 'starting';
+
+/**
+ * Swaps a broken CDN image for the coloured initial, so an account without
+ * internet access to cdn.discordapp.com still shows a filled circle instead
+ * of an empty one.
+ */
+function avatarFailed(img, cls, initial) {
+  const div = document.createElement('div');
+  div.className = cls + ' avatar-fallback';
+  div.textContent = initial;
+  img.replaceWith(div);
+}
+
+/** Discord CDN avatar, default avatar, or a coloured initial as last resort. */
+function avatarMarkup(a, cls) {
+  cls = cls ? 'avatar ' + cls : 'avatar';
+  const initial = esc((accDisplayName(a) || '?').charAt(0).toUpperCase());
+  const onerror = `avatarFailed(this,'${cls}','${initial}')`;
+
+  if (a.discordId && a.avatar) {
+    const ext = a.avatar.startsWith('a_') ? 'gif' : 'png';
+    const src = `https://cdn.discordapp.com/avatars/${a.discordId}/${a.avatar}.${ext}?size=80`;
+    return `<img class="${cls}" src="${src}" alt="" onerror="${onerror}">`;
+  }
+  if (a.discordId) {
+    let idx = 0;
+    try { idx = Number((BigInt(a.discordId) >> 22n) % 6n); } catch (_) {}
+    return `<img class="${cls}" src="https://cdn.discordapp.com/embed/avatars/${idx}.png"
+      alt="" onerror="${onerror}">`;
+  }
+  return `<div class="${cls} avatar-fallback">${initial}</div>`;
+}
+
+/* ── View state ────────────────────────────────────────────────────────── */
+let state = null;
+let view = 'dashboard';
+const expanded = new Set();
+let openMenu = null;
+let connected = false;
+let lastUpdateAt = Date.now();
+let toastTimer = null;
+
+function toast(message, isErr) {
+  const node = $('toast');
+  node.textContent = message;
+  node.className = 'toast' + (isErr ? ' err' : ' ok');
+  node.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { node.hidden = true; }, 3500);
+}
+
+/** Clipboard write with a fallback for pages served over plain http. */
+async function toClipboard(text) {
+  try {
+    await navigator.clipboard.writeText(text);
+    return;
+  } catch (_) {}
+  const ta = document.createElement('textarea');
+  ta.value = text;
+  ta.style.cssText = 'position:fixed;opacity:0';
+  document.body.appendChild(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  if (!ok) throw new Error('clipboard blocked by the browser');
+}
+
+/** Fetches a secret (token, proxy URL) on demand and copies it. */
+async function copySecret(url, id, what) {
+  try {
+    const res = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    await toClipboard(data.token ?? data.url ?? '');
+    toast(what + ' copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+async function copyPlain(text, what) {
+  try {
+    if (!text) throw new Error(what.toLowerCase() + ' is not known yet');
+    await toClipboard(text);
+    toast(what + ' copied to clipboard');
+  } catch (e) {
+    toast('Copy failed: ' + e.message, true);
+  }
+}
+
+async function refreshAccount(id) {
+  try {
+    const res = await fetch('/api/refresh-account', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast('Account details reloaded');
+  } catch (e) {
+    toast('Could not reload details: ' + e.message, true);
+  }
+}
+
+async function testProxy(id) {
+  const acc = state && state.accounts.find(a => a.id === id);
+  toast('Testing proxy' + (acc && acc.proxy ? ' ' + acc.proxy.label : '') + '…');
+  try {
+    const res = await fetch('/api/proxy-test', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast('Proxy works – exit IP ' + data.ip);
+  } catch (e) {
+    toast('Proxy failed: ' + e.message, true);
+  }
+}
+
+/* ── Render: nav / header ─────────────────────────────────────────────── */
+function renderNav() {
+  const counts = {
+    accounts: state ? state.accounts.length : 0,
+    quests: state ? state.accounts.reduce((n, a) => n + a.quests.length, 0) : 0,
+  };
+  $('nav').innerHTML = NAV.filter(n => n.id !== 'settings').map(n => `
+    <div class="nav-item${view === n.id ? ' active' : ''}" data-view="${n.id}">
+      <span class="ms">${n.icon}</span><span class="lbl">${n.label}</span>
+      ${counts[n.id] ? `<span class="nav-count">${counts[n.id]}</span>` : ''}
+    </div>`).join('');
+  $('settings-link').classList.toggle('active', view === 'settings');
+}
+
+function renderHeader() {
+  $('view-title').textContent = NAV.find(n => n.id === view).title;
+  const n = state ? state.accounts.length : 0;
+  $('view-sub').textContent = `tokens.txt · ${n} ${n === 1 ? 'account' : 'accounts'} · Europe/Warsaw`;
+  $('chip-conc-val').textContent = pad2(state ? state.concurrency : 5);
+
+  const busy = state ? state.accounts.some(isBusy) : false;
+  $('log-dot').className = 'dot' + (busy ? ' pulse' : ' idle');
+  $('btn-start-all').disabled = !state || !state.accounts.length;
+}
+
+function renderConnection() {
+  $('conn-dot').className = 'dot' + (connected ? ' pulse' : ' err');
+  $('conn-label').textContent = connected ? 'SSE · CONNECTED' : 'SSE · DISCONNECTED';
+  const secs = Math.round((Date.now() - lastUpdateAt) / 1000);
+  const active = state ? state.accounts.filter(isBusy).length : 0;
+  $('conn-meta').innerHTML =
+    `accounts ${state ? state.accounts.length : '—'} · active ${active}<br>` +
+    `updated ${!connected ? '—' : secs < 2 ? 'now' : secs + 's ago'}`;
+}
+
+/* ── Render: stats ─────────────────────────────────────────────────────── */
+function proxyStat() {
+  const p = state.proxies || { enabled: false, count: 0 };
+  if (!p.enabled) {
+    return { l: 'PROXIES', v: 'OFF', u: '', n: 'all accounts use your IP', i: 'lan' };
+  }
+  if (!p.count) {
+    return { l: 'PROXIES', v: 0, u: 'ips', n: 'no entries in ip.txt', i: 'lan', hot: true };
+  }
+  return { l: 'PROXIES', v: p.count, u: 'ips', i: 'lan', hot: p.shared,
+    n: p.shared ? 'fewer proxies than accounts' : 'one IP per account' };
+}
+
+function renderStats() {
+  const a = state.accounts;
+  const active = a.filter(isBusy).length;
+  const errors = a.filter(x => x.status === 'error').length;
+  const cards = [
+    { l: 'LOADED ACCOUNTS', v: a.length, u: 'accts', n: 'from tokens.txt', i: 'key' },
+    { l: 'ACTIVE SESSIONS', v: active, u: 'ctx', n: active ? 'browser running' : 'idle',
+      i: 'bolt', hot: active > 0 },
+    { l: 'QUESTS COMPLETED', v: state.totals.questsCompleted, u: 'total',
+      n: 'total on this machine', i: 'task_alt' },
+    { l: 'ORBS EARNED', v: state.totals.orbsEarned, u: 'orbs', n: 'running total',
+      i: 'stars', orb: true },
+    { l: 'ERRORS', v: errors, u: 'accts', n: errors ? 'check account log' : 'no issues',
+      i: 'error_outline', hot: errors > 0 },
+    proxyStat(),
+  ];
+  $('stats').innerHTML = cards.map(c => {
+    const col = c.orb ? 'var(--orb)' : c.hot ? 'var(--accent)' : 'var(--fg)';
+    const ic = c.orb ? 'var(--orb)' : c.hot ? 'var(--accent)' : 'var(--fg-ghost)';
+    return `<div class="stat">
+      <div class="stat-head"><span class="stat-label">${c.l}</span>
+        <span class="ms" style="color:${ic}">${c.i}</span></div>
+      <div class="stat-value"><b style="color:${col}">${c.v}</b><span>${c.u}</span></div>
+      <div class="stat-note">${esc(c.n)}</div></div>`;
+  }).join('');
+}
+
+/* ── Render: account rows ──────────────────────────────────────────────── */
+function statusDot(status) {
+  if (status === 'running' || status === 'starting') return 'pulse';
+  if (status === 'error') return 'err';
+  if (status === 'done') return 'ok';
+  return 'idle';
+}
+function barColor(status) {
+  if (status === 'error') return 'var(--accent-hot)';
+  if (status === 'done') return '#4A4A4A';
+  return 'var(--accent)';
+}
+function currentQuestLabel(a) {
+  const run = a.quests.find(q => q.state === 'running');
+  if (run) return { name: run.name, task: TASK_LABEL[run.task] || run.task || '—' };
+  if (a.message) return { name: a.message, task: '—' };
+  return { name: 'Waiting', task: '—' };
+}
+function questProgressText(a) {
+  const total = a.quests.length;
+  const done = a.quests.filter(q => q.state === 'done').length;
+  return total ? done + ' / ' + total + ' quests' : '— / —';
+}
+
+/** What a parked quest is waiting for – it will be tried again, not dropped. */
+function retryNote(q) {
+  const of = q.attempt ? ' ' + q.attempt + '/' + (q.maxAttempts || 3) : '';
+  return (q.rateLimited ? 'rate limited' : 'failed') + ' – retry' + of + ' queued';
+}
+
+function questLine(q) {
+  const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
+  const left = Math.max(0, (q.target || 0) - (q.done || 0));
+  let right, cls = '';
+  if (q.state === 'waiting')      { right = retryNote(q); cls = ' wait'; }
+  else if (q.state === 'error')   { right = 'error'; cls = ' err'; }
+  else if (q.state === 'done')    { right = '100% · done'; }
+  else if (q.state === 'running') { right = pct + '% · ' + fmtTime(left) + ' left'; }
+  else                            { right = fmtTime(q.target); }
+  const dot = q.state === 'running' ? 'pulse' : q.state === 'error' ? 'err'
+    : q.state === 'waiting' ? 'warn' : q.state === 'done' ? 'ok' : 'idle';
+  return `<div class="quest-line">
+    <span class="dot ${dot}"></span>
+    <span class="qn" title="${esc(q.name)}">${esc(q.name)}</span>
+    <span class="qt">${esc(TASK_LABEL[q.task] || q.task || '—')}</span>
+    <span class="qorb">${q.orbs ? '+' + q.orbs : ''}</span>
+    <span class="qp${cls}"${q.error ? ' title="' + esc(q.error) + '"' : ''}>${esc(right)}</span>
+  </div>`;
+}
+
+function accountDetail(a) {
+  const quests = a.quests.length
+    ? a.quests.map(questLine).join('')
+    : '<div class="quest-line"><span class="qp">No quests detected</span></div>';
+  const logs = a.logs.length
+    ? a.logs.slice(-14).map(l => `<div class="log-line">
+        <span class="t">${fmtClock(l.ts)}</span><span class="m">${esc(l.msg)}</span></div>`).join('')
+    : '<div class="log-line"><span class="m">No entries</span></div>';
+
+  return `<div class="row-detail">
+    ${a.desktopHint ? `<div class="notice hint">Discord refused to track <b>game</b>-type
+      quests for this account (401). Enable <b>Desktop mode</b> in Settings and restart.</div>` : ''}
+    ${a.needsCaptcha ? `<div class="notice captcha">Discord asked for verification. Enable
+      <b>Show browser windows</b>, run this account and complete the verification manually –
+      the session will be remembered.</div>` : ''}
+    <div class="detail-grid">
+      <div class="detail-col">
+        <div class="rail-label tight">QUESTS (${a.quests.length})</div>
+        ${quests}
+      </div>
+      <div class="detail-col">
+        <div class="rail-label tight">ACCOUNT LOG</div>
+        <div style="font-family:var(--mono);font-size:11px;line-height:1.9">${logs}</div>
+        <div style="display:flex;gap:8px;margin-top:14px">
+          <button class="btn btn-ghost small" data-act="start" data-id="${a.id}"
+            ${isBusy(a) ? 'disabled' : ''}><span class="ms">play_arrow</span> Start</button>
+          <button class="btn btn-ghost small" data-act="stop" data-id="${a.id}"
+            ${isBusy(a) ? '' : 'disabled'}><span class="ms">stop</span> Stop</button>
+        </div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function accountRow(a) {
+  const cur = currentQuestLabel(a);
+  const open = expanded.has(a.id);
+  return `
+    <div class="row clickable${open ? ' open' : ''}" data-row="${a.id}">
+      <div class="row-who">
+        <span class="dot ${statusDot(a.status)}"></span>
+        <div class="who"><div class="nm">${esc(accName(a))}</div>
+          <div class="tk">${esc(a.label)}</div></div>
+      </div>
+      <div class="row-quest"><b>${esc(cur.name)}</b><i>${esc(cur.task)}</i></div>
+      <div class="row-progress">
+        <div class="bar"><i style="width:${a.percent}%;background:${barColor(a.status)};box-shadow:0 0 9px ${barColor(a.status)}"></i></div>
+        <small>${esc(questProgressText(a))}</small>
+      </div>
+      <div class="right"><span class="badge ${a.status}">${STATUS_LABEL[a.status] || a.status}</span></div>
+    </div>
+    ${open ? accountDetail(a) : ''}`;
+}
+
+function renderRows() {
+  const box = $('rows');
+  box.innerHTML = state.accounts.length
+    ? state.accounts.map(accountRow).join('')
+    : `<div class="empty">No accounts.<br>Add tokens to <code>tokens.txt</code>
+       (one per line) and click "Reload lists".</div>`;
+  $('sessions-meta').textContent =
+    `${state.accounts.filter(isBusy).length} / ${state.accounts.length} ACCOUNTS`;
+}
+
+/** The account's e-mail cell – shown in full, plus the Discord user id. */
+function emailCell(a) {
+  if (!a.email) {
+    return `<div class="cell-email none">Not loaded yet – start the account
+      ${a.discordId ? `<span class="id">ID ${esc(a.discordId)}</span>` : ''}</div>`;
+  }
+  return `<div class="cell-email">${esc(a.email)}
+    ${a.discordId ? `<span class="id">ID ${esc(a.discordId)}</span>` : ''}</div>`;
+}
+
+/** The proxy this account leaves through, plus its measured exit IP. */
+function proxyCell(a) {
+  if (!a.proxy) {
+    const off = state.proxies && !state.proxies.enabled;
+    return `<div class="cell-proxy off">${off ? 'Proxies off' : 'Direct connection'}</div>`;
+  }
+  let ip = '<span class="ip">exit IP unknown – use "Test proxy"</span>';
+  if (a.proxyIp) ip = `<span class="ip live">exit IP ${esc(a.proxyIp)}</span>`;
+  else if (a.proxyError) ip = `<span class="ip bad" title="${esc(a.proxyError)}">unreachable</span>`;
+  return `<div class="cell-proxy" title="${esc(a.proxy.scheme)}://${esc(a.proxy.label)}${
+    a.proxy.auth ? ' (authenticated)' : ''}">${esc(a.proxy.label)}${ip}</div>`;
+}
+
+function accountMenu(a) {
+  return `<div class="menu-dropdown">
+    <button data-act="copy-token" data-id="${a.id}">
+      <span class="ms">key</span> Copy token</button>
+    <button data-act="copy-email" data-id="${a.id}" ${a.email ? '' : 'disabled'}>
+      <span class="ms">alternate_email</span> Copy e-mail</button>
+    <button data-act="copy-id" data-id="${a.id}" ${a.discordId ? '' : 'disabled'}>
+      <span class="ms">badge</span> Copy user ID</button>
+    <button data-act="refresh-account" data-id="${a.id}">
+      <span class="ms">refresh</span> Reload details</button>
+    <div class="sep"></div>
+    <button data-act="copy-proxy" data-id="${a.id}" ${a.proxy ? '' : 'disabled'}>
+      <span class="ms">lan</span> Copy proxy</button>
+    <button data-act="test-proxy" data-id="${a.id}" ${a.proxy ? '' : 'disabled'}>
+      <span class="ms">network_check</span> Test proxy</button>
+  </div>`;
+}
+
+function renderRowsFull() {
+  const box = $('rows-full');
+  box.innerHTML = state.accounts.length ? state.accounts.map(a => {
+    const qDone = a.quests.filter(q => q.state === 'done').length;
+    const menuOpen = openMenu === a.id;
+    const busy = isBusy(a);
+    return `<div class="row wide">
+      <div class="row-acc">
+        ${avatarMarkup(a, 'lg')}
+        <div class="who">
+          <div class="nm">${esc(accDisplayName(a))}</div>
+          <div class="tag">${esc(accHandle(a))}</div>
+        </div>
+      </div>
+      ${emailCell(a)}
+      ${proxyCell(a)}
+      <div><span class="badge ${a.status}">${STATUS_LABEL[a.status] || a.status}</span></div>
+      <div class="num">${qDone}/${a.quests.length || '–'}</div>
+      <div class="num orb">${a.orbs}</div>
+      <div class="right row-actions">
+        <button class="btn btn-ghost small" data-act="${busy ? 'stop' : 'start'}"
+          data-id="${a.id}">${busy ? 'Stop' : 'Start'}</button>
+        <div class="menu-wrap">
+          <button class="menu-btn${menuOpen ? ' open' : ''}" data-menu-toggle="${a.id}"
+            title="More actions">
+            <span class="ms">more_vert</span>
+          </button>
+          ${menuOpen ? accountMenu(a) : ''}
+        </div>
+      </div>
+    </div>`;
+  }).join('') : `<div class="empty">No accounts in <code>tokens.txt</code>.</div>`;
+  $('accounts-meta').textContent = `${state.accounts.length} ACCOUNTS`;
+}
+
+/* ── Render: quests ────────────────────────────────────────────────────── */
+function renderQuests() {
+  const rows = [];
+  let running = 0;
+  for (const a of state.accounts) {
+    for (const q of a.quests) {
+      if (q.state === 'running') running++;
+      const pct = q.target ? Math.min(100, Math.round((q.done / q.target) * 100)) : 0;
+      const badge = q.state === 'done' ? 'done' : q.state === 'error' ? 'error'
+        : q.state === 'running' ? 'running' : q.state === 'waiting' ? 'waiting' : 'idle';
+      const qDot = q.state === 'running' ? 'pulse' : q.state === 'error' ? 'err'
+        : q.state === 'waiting' ? 'warn' : q.state === 'done' ? 'ok' : 'idle';
+      const note = q.state === 'waiting' ? retryNote(q)
+        : q.state === 'error' ? (q.error || 'error')
+        : q.state === 'running' ? fmtTime(Math.max(0, (q.target || 0) - (q.done || 0))) + ' left'
+        : q.state === 'done' ? 'done' : 'pending';
+      rows.push(`<div class="row quests">
+        <div class="row-who"><span class="dot ${qDot}"></span>
+          <div class="who"><div class="nm">${esc(accName(a))}</div>
+            <div class="tk">${esc(a.label)}</div></div></div>
+        <div class="row-quest"><b title="${esc(q.name)}">${esc(q.name)}</b>
+          <i${q.error ? ' title="' + esc(q.error) + '"' : ''}>${esc(note)}</i></div>
+        <div><span class="qt">${esc(TASK_LABEL[q.task] || q.task || '—')}</span></div>
+        <div class="num orb">${q.orbs ? '+' + q.orbs : '—'}</div>
+        <div class="row-progress">
+          <div class="bar"><i style="width:${pct}%;background:${q.state === 'done' ? '#4A4A4A' : 'var(--accent)'}"></i></div>
+          <small>${q.done || 0} / ${q.target || 0}s</small>
+        </div>
+        <div class="right"><span class="badge ${badge}">${esc((q.state || 'pending').toUpperCase())}</span></div>
+      </div>`);
+    }
+  }
+  $('quests-list').innerHTML = rows.length ? rows.join('')
+    : `<div class="empty">No quests yet.<br>Start an account – the list appears once Discord has loaded.</div>`;
+  $('quests-meta').textContent = `${running} ACTIVE`;
+
+  const skipped = [];
+  for (const a of state.accounts) {
+    for (const q of (a.skipped || [])) {
+      skipped.push(`<div class="row skipped">
+        <div class="row-who"><span class="dot idle"></span>
+          <div class="who"><div class="nm">${esc(accName(a))}</div>
+            <div class="tk">${esc(a.label)}</div></div></div>
+        <div class="row-quest"><b>${esc(q.name)}</b>
+          <i>${esc(TASK_LABEL[q.task] || q.task || '—')}</i></div>
+        <div class="num">${esc(rewardLabel(q.rewards))}</div>
+      </div>`);
+    }
+  }
+  $('skipped-panel').hidden = !skipped.length;
+  $('skipped-list').innerHTML = skipped.join('');
+  $('skipped-meta').textContent = String(skipped.length);
+}
+
+/* ── Render: logs ──────────────────────────────────────────────────────── */
+function logKind(msg) {
+  if (/error|fail|401|refused|rate limit/i.test(msg)) return 'err';
+  if (/completed|done|finished|orbs/i.test(msg)) return 'ok';
+  return '';
+}
+
+function renderLogs() {
+  const all = [];
+  for (const a of state.accounts) {
+    const who = accName(a);
+    for (const l of a.logs) all.push({ ts: l.ts, who, msg: l.msg });
+  }
+  all.sort((x, y) => x.ts - y.ts);
+
+  const html = all.length ? all.map(l => `<div class="log-line ${logKind(l.msg)}">
+      <span class="t">${fmtClock(l.ts)}</span>
+      <span class="g">${esc(l.who)}</span>
+      <span class="m">${esc(l.msg)}</span></div>`).join('')
+    : '<div class="log-line"><span class="m">No entries yet – start an account.</span></div>';
+
+  for (const id of ['logs', 'logs-full']) {
+    const box = $(id);
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.innerHTML = html;
+    if (atBottom) box.scrollTop = box.scrollHeight;
+  }
+  $('logs-meta').textContent = `${all.length} ENTRIES`;
+}
+
+/* ── Render: task types / resources ───────────────────────────────────── */
+function renderTasks() {
+  const counts = {};
+  for (const a of state.accounts) {
+    for (const q of a.quests) counts[q.task] = (counts[q.task] || 0) + 1;
+  }
+  $('tasks').innerHTML = Object.keys(TASK_META).map(name => {
+    const m = TASK_META[name];
+    return `<div class="task ${m.fast ? 'fast' : 'slow'}">
+      <span class="ms">${m.icon}</span>
+      <span class="task-name">${name}</span>
+      <span class="task-eta">${counts[name] ? counts[name] + ' × ' + m.eta : m.eta}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderMemory() {
+  const active = state.accounts.filter(isBusy).length;
+  const planned = Math.min(state.concurrency, state.accounts.length || state.concurrency);
+  $('memory-bar').classList.toggle('stale', active === 0);
+
+  $('memory-main').innerHTML = active > 0
+    ? `Open contexts: <b>${active}</b> · estimated usage
+       <b>${(active * RAM_PER_CONTEXT).toLocaleString('en-US')} MB</b>`
+    : `Engine idle · at concurrency ${state.concurrency} that's about
+       <b>${(planned * RAM_PER_CONTEXT).toLocaleString('en-US')} MB</b>`;
+  $('memory-sub').textContent = `~${RAM_PER_CONTEXT} MB / context · chromium ${
+    state.headless ? 'headless' : 'windowed'}`;
+  $('memory-fill').style.width =
+    Math.min(100, (active / Math.max(1, state.concurrency)) * 100) + '%';
+  $('btn-stop-all').disabled = active === 0;
+}
+
+/* ── Render: settings ──────────────────────────────────────────────────── */
+function renderSettings() {
+  const range = $('conc-range'), input = $('conc-input');
+  if (document.activeElement !== range) range.value = state.concurrency;
+  if (document.activeElement !== input) input.value = state.concurrency;
+  $('conc-note').textContent =
+    `~${(state.concurrency * RAM_PER_CONTEXT).toLocaleString('en-US')} MB RAM`;
+
+  $('tg-headed').classList.toggle('on', !state.headless);
+  $('tg-onlyorbs').classList.toggle('on', state.onlyOrbs !== false);
+  $('tg-desktop').classList.toggle('on', !!state.desktopMode);
+  renderProxySettings();
+}
+
+function renderProxySettings() {
+  const p = state.proxies || { enabled: false, count: 0, errors: [], fileExists: false };
+  const accounts = state.accounts.length;
+  const withProxy = state.accounts.filter(a => a.proxy).length;
+  const verified = new Set(state.accounts.filter(a => a.proxyIp).map(a => a.proxyIp));
+
+  $('tg-proxies').classList.toggle('on', !!p.enabled);
+  $('proxy-desc').innerHTML = p.fileExists
+    ? `<code>${esc(p.fileName)}</code> holds ${p.count} ${p.count === 1 ? 'proxy' : 'proxies'}.
+       When this is off every account uses your own IP.`
+    : `No <code>${esc(p.fileName || 'ip.txt')}</code> found yet – create it next to
+       <code>server.js</code> and hit "Reload ip.txt".`;
+
+  const cards = [
+    { k: 'PROXIES IN FILE', v: p.count, cls: p.count ? 'hot' : '' },
+    { k: 'ACCOUNTS COVERED', v: `${withProxy} / ${accounts}`,
+      cls: accounts && withProxy < accounts ? 'warn' : '' },
+    { k: 'DISTINCT EXIT IPS SEEN', v: verified.size },
+  ];
+
+  let notes = '';
+  if (p.enabled && p.shared) {
+    notes += `<div class="proxy-note warn">Fewer proxies than accounts – the list wraps
+      around, so ${accounts - p.count} account(s) share an IP with another one.
+      Add ${accounts - p.count} more line(s) to ${esc(p.fileName)} for one IP per account.</div>`;
+  }
+  if (p.enabled && p.fileExists && !p.count) {
+    notes += `<div class="proxy-note warn">${esc(p.fileName)} exists but has no usable
+      entries – every account will use your own IP.</div>`;
+  }
+  if (p.errors && p.errors.length) {
+    notes += `<div class="proxy-note err">${p.errors.length} line(s) in
+      ${esc(p.fileName)} could not be read:<ul>${p.errors.slice(0, 8).map(e =>
+        `<li>line ${e.line}: ${esc(e.error)}</li>`).join('')}</ul></div>`;
+  }
+
+  $('proxy-status').innerHTML = cards.map(c =>
+    `<div class="proxy-stat"><div class="k">${c.k}</div>
+      <div class="v ${c.cls}">${esc(c.v)}</div></div>`).join('')
+    + notes + proxyTestReport(p);
+
+  const t = p.test || {};
+  $('btn-test-proxies').disabled = t.running || !p.count;
+  $('btn-reload-proxies').disabled = !!t.running;
+  $('btn-test-proxies').lastChild.textContent = t.running
+    ? ` Testing ${t.done} / ${t.total}…` : ' Test all proxies';
+}
+
+/** Result of the last "Test all proxies" run – dead entries listed by line. */
+function proxyTestReport(p) {
+  const t = p.test;
+  const results = (t && t.results) || [];
+  if (!t || (!t.running && !results.length)) return '';
+
+  const dead = results.filter(r => !r.ok);
+  if (t.running) {
+    return `<div class="proxy-note">Testing proxies – ${t.done} of ${t.total} checked,
+      ${t.ok} working so far. Each dead proxy costs a 15 s timeout, so a long
+      list takes a while.</div>`;
+  }
+
+  const head = `${t.ok} of ${t.total} ${t.total === 1 ? 'proxy works' : 'proxies work'}`;
+  if (!dead.length) {
+    return `<div class="proxy-note ok">${head} – every entry in ${esc(p.fileName)}
+      answered.</div>`;
+  }
+  return `<div class="proxy-note err">${head}. These did not answer and are worth
+    removing from ${esc(p.fileName)}:<ul>${dead.slice(0, 20).map(r =>
+      `<li>${esc(r.label)} – ${esc(r.error)}</li>`).join('')}</ul>
+    ${dead.length > 20 ? `<div style="margin-top:6px">…and ${dead.length - 20} more.</div>` : ''}
+  </div>`;
+}
+
+/* ── Render root ───────────────────────────────────────────────────────── */
+function render() {
+  renderNav();
+  renderHeader();
+  renderConnection();
+  if (!state) return;
+  renderStats();
+  renderRows();
+  renderRowsFull();
+  renderQuests();
+  renderLogs();
+  renderTasks();
+  renderMemory();
+  renderSettings();
+}
+
+function setView(next) {
+  view = next;
+  for (const s of document.querySelectorAll('.view')) s.hidden = s.dataset.view !== next;
+  renderNav();
+  renderHeader();
+}
+
+/* ── Interactions ──────────────────────────────────────────────────────── */
+document.addEventListener('click', e => {
+  const menuToggle = e.target.closest('[data-menu-toggle]');
+  if (menuToggle) {
+    e.stopPropagation();
+    const id = menuToggle.dataset.menuToggle;
+    openMenu = openMenu === id ? null : id;
+    renderRowsFull();
+    return;
+  }
+
+  const act = e.target.closest('button[data-act]');
+  if (act && !act.disabled) {
+    e.stopPropagation();
+    const id = act.dataset.id;
+    const acc = state && state.accounts.find(a => a.id === id);
+
+    // Everything in the ⋮ menu is handled here; the menu closes either way.
+    const menuActions = {
+      'copy-token': () => copySecret('/api/token', id, 'Token'),
+      'copy-proxy': () => copySecret('/api/proxy-url', id, 'Proxy'),
+      'copy-email': () => copyPlain(acc && acc.email, 'E-mail'),
+      'copy-id':    () => copyPlain(acc && acc.discordId, 'User ID'),
+      'test-proxy': () => testProxy(id),
+      'refresh-account': () => refreshAccount(id),
+    };
+    const handler = menuActions[act.dataset.act];
+    if (handler) {
+      openMenu = null;
+      handler();
+      renderRowsFull();
+      return;
+    }
+
+    post('/api/' + act.dataset.act, { id });
+    act.disabled = true;
+    return;
+  }
+
+  const nav = e.target.closest('.nav-item');
+  if (nav) return setView(nav.dataset.view);
+  if (e.target.closest('#settings-link') || e.target.closest('#chip-conc')) return setView('settings');
+
+  const row = e.target.closest('.row[data-row]');
+  if (row) {
+    const id = row.dataset.row;
+    if (expanded.has(id)) expanded.delete(id); else expanded.add(id);
+    if (state) renderRows();
+  }
+
+  // Any other click closes an open account menu.
+  if (openMenu !== null) { openMenu = null; renderRowsFull(); }
+});
+
+$('btn-start-all').onclick = () => post('/api/start-all');
+$('btn-stop-all').onclick = () => post('/api/stop-all');
+$('btn-reload').onclick = () => post('/api/reload-tokens');
+
+$('conc-range').oninput = e => {
+  $('conc-input').value = e.target.value;
+  $('chip-conc-val').textContent = pad2(e.target.value);
+  $('conc-note').textContent =
+    `~${(e.target.value * RAM_PER_CONTEXT).toLocaleString('en-US')} MB RAM`;
+};
+$('conc-range').onchange = e => post('/api/concurrency', { value: +e.target.value });
+$('conc-input').onchange = e => post('/api/concurrency', { value: +e.target.value });
+
+// The "Show windows" toggle is the inverse of headless.
+$('tg-headed').onclick = () => post('/api/headless', { value: !state.headless });
+$('tg-onlyorbs').onclick = () => post('/api/only-orbs', { value: !(state.onlyOrbs !== false) });
+$('tg-desktop').onclick = () => post('/api/desktop-mode', { value: !state.desktopMode });
+$('tg-proxies').onclick = () =>
+  post('/api/use-proxies', { value: !(state.proxies && state.proxies.enabled) });
+$('btn-reload-proxies').onclick = async () => {
+  const res = await post('/api/reload-proxies');
+  const data = await res.json().catch(() => ({}));
+  toast(`ip.txt reloaded – ${data.count ?? 0} proxies`);
+};
+$('btn-refresh-accounts').onclick = async () => {
+  const btn = $('btn-refresh-accounts');
+  btn.disabled = true;
+  toast('Reading account details…');
+  try {
+    const res = await post('/api/refresh-accounts');
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || 'Request failed');
+    toast(`Details loaded for ${data.known} of ${state.accounts.length} accounts`);
+  } catch (e) {
+    toast('Could not load details: ' + e.message, true);
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+$('btn-test-proxies').onclick = async () => {
+  const res = await post('/api/proxy-test-all');
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return toast(data.error || 'Could not start the test', true);
+  // Progress and the final report arrive through the state stream.
+  toast(`Testing ${data.total} proxies…`);
+};
+
+/* ── State stream ──────────────────────────────────────────────────────── */
+setInterval(renderConnection, 1000);
+
+function connect() {
+  const es = new EventSource('/api/stream');
+  es.onopen = () => { connected = true; renderConnection(); };
+  es.onmessage = e => {
+    connected = true;
+    lastUpdateAt = Date.now();
+    state = JSON.parse(e.data);
+    render();
+  };
+  es.onerror = () => {
+    connected = false; renderConnection(); es.close(); setTimeout(connect, 1500);
+  };
+}
+
+setView('dashboard');
+renderConnection();
+connect();
+</script>
+</body>
+</html>

@@ -1,0 +1,34 @@
+# ─────────────────────────────────────────────────────────────────────────
+#  PROXY LIST  –  one proxy per line
+#
+#  Account #1 (first line of tokens.txt) uses proxy #1 (first line here),
+#  account #2 uses proxy #2, and so on. If there are fewer proxies than
+#  accounts the list wraps around, so accounts start sharing an IP – put at
+#  least as many proxies here as you have tokens.
+#
+#  Accepted formats (paste a vendor list in as-is, all of these work):
+#
+#    host:port
+#    host:port:user:pass
+#    user:pass@host:port
+#    host:port@user:pass          (Webshare's list designer default)
+#    user:pass:host:port
+#    http://user:pass@host:port
+#    socks5://host:port
+#
+#  No scheme means HTTP, which is what almost every vendor gives you.
+#  Note: Chromium does not support username/password auth on SOCKS proxies –
+#  use HTTP proxies whenever the proxy needs credentials.
+#
+#  Lines starting with # or // are ignored, so notes like this are fine.
+#  Turn the whole thing on/off under Settings → Network in the panel, and
+#  use "Test proxy" in the ⋮ menu of an account to see its real exit IP.
+#
+#  Do not commit this file with real credentials in it.
+# ─────────────────────────────────────────────────────────────────────────
+
+# Examples – delete these and paste your own:
+# 145.239.85.10:8080
+# 145.239.85.11:8080:myuser:mypass
+# myuser:mypass@145.239.85.12:8080
+# http://myuser:mypass@residential.example-vendor.com:10001
