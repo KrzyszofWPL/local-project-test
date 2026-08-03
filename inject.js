@@ -197,8 +197,6 @@ module.exports = `(async () => {
   // ── 4. Quest enrollment ───────────────────────────────────────────────────
   log('Found ' + selected.length + ' quest(s) to do (out of ' + all.length + ' visible)');
 
-  // Discord API calls can simply never return (rate limit, dropped session).
-  // Without a timeout the loop sits silently and looks stuck.
   const withTimeout = (p, ms, label) => Promise.race([
     p,
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
@@ -206,10 +204,6 @@ module.exports = `(async () => {
 
   const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
 
-  // A rate limit is a request to slow down, not a refusal. The distinction
-  // matters: treating it like an error and retrying with a different task
-  // only makes the limit worse. The Polish fragment below matches Discord's
-  // own rate-limit message, since the session locale is pl-PL.
   const isRateLimit = (e) => {
     if (!e) return false;
     if (e.status === 429) return true;
@@ -243,9 +237,6 @@ module.exports = `(async () => {
     throw lastErr;
   };
 
-  // A 'location' value that works once will work for later quests too.
-  // Without caching it we'd try 7 variants per quest, which quickly trips
-  // the rate limit and causes long waits inside Discord's api module.
   let knownLoc = null;
 
   const enroll = async (quest) => {
