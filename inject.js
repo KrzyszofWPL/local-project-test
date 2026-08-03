@@ -509,16 +509,42 @@ module.exports = `(async () => {
 
   const nameOf = q => (q.config && q.config.messages && q.config.messages.questName) || q.id;
 
-  // ── Reward claim ──────────────────────────────────────────────────────────
-  // Finishing the task requirements does not hand over the reward – Discord
-  // gates the actual claim behind an hCaptcha. That check is deliberate: it
-  // wants a human. So the bot asks for the claim, and when Discord demands
-  // verification it suspends and waits for YOU to solve it in this account's own
-  // browser window (over this account's proxy). __questAwaitVerify is provided by
-  // the panel and returns once you confirm; accounts are handled one at a time.
-  const awaitVerify = (typeof window.__questAwaitVerify === 'function')
-    ? window.__questAwaitVerify
-    : (async () => false);
+// ── Reward claim (Auto-solve AI via local GPU) ─────────────────────────
+  
+  // Lokalny endpoint Twojego serwera AI uruchomionego na RTX 4060
+  const LOCAL_AI_ENDPOINT = 'http://localhost:5000/solve-captcha';
+
+  // Zamieniamy ręczne oczekiwanie na automatyczne wywołanie lokalnego AI
+  const awaitVerify = async (questId, contextInfo) => {
+    log('Automatyczne rozwiązywanie CAPTCHA przez lokalne GPU (RTX 4060)...');
+    try {
+      // 1. Wywołanie Twojego lokalnego mikroserwisu AI
+      const response = await fetch(LOCAL_AI_ENDPOINT, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          questId: questId,
+          context: contextInfo,
+          service: 'hcaptcha'
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error('Lokalny serwer AI zwrócił błąd: ' + response.status);
+      }
+
+      const data = await response.json();
+      
+      // Serwer AI powinien zwrócić obiekt np. { success: true, captchaKey: "0_xxxx..." }
+      if (data && data.success && data.captchaKey) {
+        log('Lokalne AI pomyślnie wygenerowało token CAPTCHA!');
+        return data.captchaKey; // Zwracamy token wygenerowany przez AI
+      }
+    } catch (err) {
+      log('Błąd podczas komunikacji z lokalnym AI: ' + errMsg(err));
+    }
+    return null;
+  };
 
   const isClaimed = async (quest) => {
     try {
@@ -536,17 +562,23 @@ module.exports = `(async () => {
     return false;
   };
 
-  const attemptClaim = async (quest) => {
+  // Zmodyfikowana funkcja attemptClaim pozwalająca na przekazanie tokenu z AI
+  const attemptClaim = async (quest, captchaKey = null) => {
     try {
-      await apiCall('POST', '/quests/' + quest.id + '/claim-reward', {}, 'claim');
+      const payload = {};
+      // Jeśli mamy token wygenerowany przez AI, dołączamy go do payloadu
+      if (captchaKey) {
+        payload.captcha_key = captchaKey;
+      }
+
+      await apiCall('POST', '/quests/' + quest.id + '/claim-reward', payload, 'claim');
       return { ok: true };
     } catch(e) {
       const msg = String(errMsg(e));
       const body = e && e.body;
       const wantsCaptcha = /captcha|verif/i.test(msg)
         || !!(body && (body.captcha_key || body.captcha_service || body.captcha_sitekey));
-      if (wantsCaptcha) return { ok: false, captcha: true, err: msg };
-      // Nothing left to claim is a success as far as we're concerned.
+      if (wantsCaptcha) return { ok: false, captcha: true, err: msg, body: body };
       if (/already|claimed|not.*eligible|no.*reward/i.test(msg)) return { ok: true, already: true };
       return { ok: false, err: msg };
     }
@@ -554,78 +586,30 @@ module.exports = `(async () => {
 
   const claimReward = async (quest) => {
     let r = await attemptClaim(quest);
-
+    
     if (r.captcha) {
       R({ t: 'qclaim', id: quest.id, state: 'captcha' });
-      log('Reward for "' + nameOf(quest) + '" needs verification – waiting for you to solve it');
-      let solved = false;
-      try { solved = await awaitVerify(quest.id, 'Claim reward: ' + nameOf(quest)); } catch(_) {}
-      if (!solved) { R({ t: 'qclaim', id: quest.id, state: 'unclaimed' }); return; }
-      // You may have completed the claim in Discord's own UI while solving it;
-      // re-check before trying again so we don't double-submit.
-      if (await isClaimed(quest)) { R({ t: 'qclaim', id: quest.id, state: 'claimed' }); return; }
-      r = await attemptClaim(quest);
+      log('Napotkano weryfikację dla "' + nameOf(quest) + '" – przekazywanie do lokalnego AI...');
+
+      // Próbujemy automatycznie rozwiązać weryfikację na GPU
+      const captchaKey = await awaitVerify(quest.id, 'Claim reward: ' + nameOf(quest));
+
+      if (!captchaKey) {
+        log('Nie udało się rozwiązać CAPTCHA przez AI.');
+        R({ t: 'qclaim', id: quest.id, state: 'unclaimed' });
+        return;
+      }
+
+      if (await isClaimed(quest)) {
+        R({ t: 'qclaim', id: quest.id, state: 'claimed' });
+        return;
+      }
+
+      // Ponowna próba odebrania z przekazanym tokenem rozwiązanym przez AI
+      r = await attemptClaim(quest, captchaKey);
     }
 
     if (r.ok) R({ t: 'qclaim', id: quest.id, state: 'claimed', already: !!r.already });
     else if (r.captcha) R({ t: 'qclaim', id: quest.id, state: 'captcha-again' });
     else R({ t: 'qclaim', id: quest.id, state: 'error', err: r.err });
   };
-
-  // Report the requirement as done, then try to claim the reward.
-  const finishQuest = async (quest, orbs) => {
-    R({ t: 'qdone', id: quest.id, orbs: orbs });
-    try { await claimReward(quest); }
-    catch(e) { R({ t: 'qclaim', id: quest.id, state: 'error', err: errMsg(e) }); }
-  };
-
-  // Spacing between quests keeps us below the rate-limit threshold.
-  const queue = selected.slice();
-  const attempts = {};
-  let first = true;
-
-  while (queue.length) {
-    const quest = queue.shift();
-    if (!first) await sleep(3000);
-    first = false;
-
-    let outcome = null;
-    try {
-      outcome = await doQuest(quest);
-    } catch(e) {
-      outcome = { retry: true, err: errMsg(e), rateLimited: isRateLimit(e) };
-    }
-
-    // Finished, or already reported as permanently failed.
-    if (!outcome || !outcome.retry) continue;
-
-    attempts[quest.id] = (attempts[quest.id] || 0) + 1;
-    const used = attempts[quest.id];
-    const qname = nameOf(quest);
-
-    if (used >= MAX_ATTEMPTS) {
-      R({ t: 'qerr', id: quest.id,
-          err: outcome.err + ' (gave up after ' + used + ' attempts)' });
-      log('Giving up on ' + qname + ' after ' + used + ' attempts: ' + outcome.err);
-      continue;
-    }
-
-    R({ t: 'qretry', id: quest.id, err: outcome.err, attempt: used, max: MAX_ATTEMPTS,
-        rateLimited: !!outcome.rateLimited });
-    log((outcome.rateLimited ? 'Rate limited on ' : 'Failed: ') + qname
-        + ' (' + outcome.err + ') - moving on, will come back to it ['
-        + used + '/' + MAX_ATTEMPTS + ']');
-    queue.push(quest);
-
-    // It was the last one, so there is nothing else to get on with in the
-    // meantime - wait instead of retrying the same thing immediately.
-    if (queue.length === 1) {
-      log('Nothing else queued - waiting ' + (RETRY_PAUSE / 1000) + 's before retrying ' + qname);
-      await sleep(RETRY_PAUSE);
-    }
-  }
-
-  R({ t: 'finished' });
-  window.__questBotActive = false;
-  return { ok: true };
-})()`;
