@@ -26,6 +26,7 @@ const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000/analyze-capt
 const CAPTCHA_URL = 'https://discord.com/__quest_captcha';
 const MAX_ROUNDS = parseInt(process.env.CAPTCHA_ROUNDS || '4', 10);
 const FRAME_WAIT_MS = parseInt(process.env.CAPTCHA_FRAME_WAIT || '30000', 10);
+const MAX_REROLLS = parseInt(process.env.CAPTCHA_REROLLS || '3', 10);
 
 function pageHtml(sitekey, rqdata) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>verify</title></head>
@@ -148,23 +149,69 @@ async function askSolver(tiles, prompt, log) {
   return Array.isArray(data.click_indices) ? data.click_indices : [];
 }
 
+// hCaptcha wystawia rozne typy wyzwan. Solver oparty o detekcje obiektow
+// (YOLO/COCO) potrafi obsluzyc WYLACZNIE siatke obrazkow - reszta to zupelnie
+// inne zadania (przeciaganie elementow, geometria, rozpoznawanie ksztaltow),
+// dla ktorych detektor obiektow nie ma zadnego zastosowania.
+function classifyChallenge(prompt) {
+  const p = String(prompt || '').toLowerCase();
+  if (/\bdrag\b|przeciągnij|przeciagnij|\bslide\b|\bmove the\b/.test(p)) return 'drag';
+  if (/\brotate\b|obróć|obroc/.test(p)) return 'rotate';
+  if (/click each image|select all|zaznacz|kliknij.*obraz|containing a/.test(p)) return 'grid';
+  return 'nieznany';
+}
+
+// Nowe wyzwanie zamiast obecnego - hCaptcha losuje typ, wiec przy zadaniu
+// spoza mozliwosci solvera warto sprobowac wylosowac siatke obrazkow.
+async function reroll(frame, log) {
+  const btn = frame.locator(
+    '.refresh, .button-refresh, [aria-label*="new challenge" i], [title*="new challenge" i]'
+  ).first();
+  try {
+    if (!(await btn.count())) {
+      log('[GPU-AI] Brak przycisku losowania nowego wyzwania.');
+      return false;
+    }
+    await btn.click({ timeout: 5000 });
+    await frame.page().waitForTimeout(2000);
+    return true;
+  } catch (e) {
+    log(`[GPU-AI] Nie udało się wylosować nowego wyzwania: ${(e && e.message) || e}`);
+    return false;
+  }
+}
+
 // Jedna runda wyzwania: przeczytaj polecenie, zrzuc kafelki, zapytaj solver,
-// klikaj, zatwierdz. Zwraca true, jesli udalo sie cokolwiek zatwierdzic.
-async function playRound(frame, log) {
+// klikaj, zatwierdz. Zwraca kod statusu opisujacy, co sie stalo.
+async function playRound(frame, log, page) {
   let prompt = '';
   try {
     prompt = (await frame.locator(PROMPT_SELECTORS).first().innerText({ timeout: 8000 })).trim();
   } catch (_) {
     log('[GPU-AI] Nie udało się odczytać treści zadania z ramki.');
-    return false;
+    return 'brak-polecenia';
   }
-  log(`[GPU-AI] Zadanie: "${prompt}"`);
+
+  const kind = classifyChallenge(prompt);
+  log(`[GPU-AI] Zadanie [${kind}]: "${prompt}"`);
 
   const tileLoc = frame.locator(TILE_SELECTORS);
   const count = await tileLoc.count();
+
   if (!count) {
-    log('[GPU-AI] Brak kafelków w ramce wyzwania.');
-    return false;
+    if (kind !== 'grid') {
+      log(`[GPU-AI] To wyzwanie typu "${kind}" - solver oparty o detekcję obiektów`
+        + ' nie ma jak go rozwiązać (brak siatki obrazków).');
+    } else {
+      log('[GPU-AI] Polecenie wygląda na siatkę, ale nie znalazłem kafelków.');
+    }
+    if (page) await dumpState(page, log, 'brak-kafelkow');
+    return 'brak-kafelkow';
+  }
+
+  if (kind !== 'grid') {
+    log(`[GPU-AI] Kafelki są, ale polecenie nie wygląda na wybór obrazków`
+      + ' - próbuję mimo to.');
   }
 
   const tiles = [];
@@ -175,7 +222,7 @@ async function playRound(frame, log) {
   log(`[GPU-AI] Zrzucono ${tiles.length} kafelków, wysyłam do GPU...`);
 
   const picks = await askSolver(tiles, prompt, log);
-  if (picks === null) return false;
+  if (picks === null) return 'solver-odmowil';
 
   log(`[GPU-AI] GPU wytypowało kafelki: [${picks.join(', ')}]`);
   for (const idx of picks) {
@@ -187,10 +234,10 @@ async function playRound(frame, log) {
   const submit = frame.locator('.button-submit, .verify-button').first();
   if (!(await submit.count())) {
     log('[GPU-AI] Nie znaleziono przycisku zatwierdzenia.');
-    return false;
+    return 'brak-zatwierdzenia';
   }
   await submit.click({ timeout: 5000 });
-  return true;
+  return 'zatwierdzone';
 }
 
 /**
@@ -229,6 +276,7 @@ async function solveCaptcha(context, challenge, log) {
       return null;
     }
 
+    let rerolls = 0;
     for (let round = 1; round <= MAX_ROUNDS; round++) {
       const token = await page.evaluate(() => window.__capToken);
       if (token) {
@@ -271,8 +319,19 @@ async function solveCaptcha(context, challenge, log) {
       }
 
       log(`[GPU-AI] Runda ${round}/${MAX_ROUNDS}`);
-      const played = await playRound(frame, log);
-      if (!played) return null;
+      const status = await playRound(frame, log, page);
+
+      if (status === 'brak-kafelkow' && rerolls < MAX_REROLLS) {
+        rerolls++;
+        log(`[GPU-AI] Losuję inne wyzwanie (${rerolls}/${MAX_REROLLS})...`);
+        if (await reroll(frame, log)) continue;
+        return null;
+      }
+
+      if (status !== 'zatwierdzone') {
+        log(`[GPU-AI] Runda zakończona bez zatwierdzenia (${status}).`);
+        return null;
+      }
 
       // hCaptcha po zatwierdzeniu albo wystawia token, albo kolejna runde.
       await page.waitForTimeout(2500);
