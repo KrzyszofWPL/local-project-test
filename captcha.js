@@ -29,6 +29,15 @@ const MAX_ROUNDS = parseInt(process.env.CAPTCHA_ROUNDS || '4', 10);
 const FRAME_WAIT_MS = parseInt(process.env.CAPTCHA_FRAME_WAIT || '30000', 10);
 const MAX_REROLLS = parseInt(process.env.CAPTCHA_REROLLS || '3', 10);
 
+// Jezyk interfejsu hCaptchy. Kontekst przegladarki jest pl-PL, wiec wyzwania
+// przychodzily po polsku ("Przeciągnij segment po prawej stronie, aby uzupełnić
+// linię"). Grounding DINO ma angielski enkoder tekstu, wiec polska frazy nie
+// rozumie w ogole - uziemial sie wtedy na calym obrazku i dawal odpowiedzi
+// zdegenerowane. Wymuszamy angielski, zeby model dostawal zapytania w jezyku,
+// na ktorym byl trenowany. Ustaw CAPTCHA_LANG=pl, zeby wrocic do lokalizacji
+// zgodnej z reszta odcisku przegladarki.
+const CAPTCHA_LANG = process.env.CAPTCHA_LANG || 'en';
+
 function pageHtml(sitekey, rqdata) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>verify</title></head>
 <body style="background:#1a1a1e">
@@ -42,6 +51,7 @@ function pageHtml(sitekey, rqdata) {
       var id = hcaptcha.render('cap', {
         sitekey: ${JSON.stringify(sitekey)},
         size: 'invisible',
+        hl: ${JSON.stringify(CAPTCHA_LANG)},
         callback: function (t) { window.__capToken = t; },
         'error-callback': function (e) { window.__capError = String(e || 'error'); },
         'expired-callback': function () { window.__capError = 'expired'; },
@@ -66,7 +76,7 @@ function pageHtml(sitekey, rqdata) {
     }
   }
 </script>
-<script src="https://js.hcaptcha.com/1/api.js?render=explicit&onload=onHcLoad" async defer></script>
+<script src="https://js.hcaptcha.com/1/api.js?render=explicit&onload=onHcLoad&hl=${encodeURIComponent(CAPTCHA_LANG)}" async defer></script>
 </body></html>`;
 }
 
@@ -251,20 +261,76 @@ function classifyChallenge(prompt) {
 
 // Nowe wyzwanie zamiast obecnego - hCaptcha losuje typ, wiec przy zadaniu
 // spoza mozliwosci solvera warto sprobowac wylosowac siatke obrazkow.
+// Interfejs hCaptchy jest tlumaczony - przy polskiej lokalizacji przycisk ma
+// aria-label "Odśwież wyzwanie", wiec dopasowania po angielskim tekscie nie
+// trafiaja. Klasa `.refresh` jest stabilna, ale bywa ich w drzewie kilka.
+const REFRESH_SELECTORS = '.refresh, .button-refresh,'
+  + ' [aria-label*="new challenge" i], [title*="new challenge" i],'
+  + ' [aria-label*="odśwież" i], [title*="odśwież" i],'
+  + ' [aria-label*="odswiez" i], [title*="odswiez" i]';
+
 async function reroll(frame, log) {
-  const btn = frame.locator(
-    '.refresh, .button-refresh, [aria-label*="new challenge" i], [title*="new challenge" i]'
-  ).first();
   try {
-    if (!(await btn.count())) {
+    const all = frame.locator(REFRESH_SELECTORS);
+    const n = await all.count();
+    if (!n) {
       log('[GPU-AI] Brak przycisku losowania nowego wyzwania.');
       return false;
     }
-    await btn.click({ timeout: 5000 });
+
+    // Bierzemy pierwszy WIDOCZNY, a nie pierwszy w drzewie. `.first()` trafialo
+    // w egzemplarz ukryty (hCaptcha trzyma zapasowe kopie kontrolek), przez co
+    // klikniecie konczylo sie "element is not visible" po 5 s czekania.
+    for (let i = 0; i < n; i++) {
+      const el = all.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      await el.click({ timeout: 5000 });
+      await frame.page().waitForTimeout(2000);
+      return true;
+    }
+
+    // Zaden nie przechodzi testu widocznosci - wysylamy zdarzenie wprost.
+    // dispatchEvent nie wymaga widocznosci ani stabilnosci elementu.
+    log(`[GPU-AI] Żaden z ${n} przycisków odświeżenia nie jest widoczny`
+      + ' – wysyłam zdarzenie click bezpośrednio.');
+    await all.first().dispatchEvent('click');
     await frame.page().waitForTimeout(2000);
     return true;
   } catch (e) {
     log(`[GPU-AI] Nie udało się wylosować nowego wyzwania: ${(e && e.message) || e}`);
+    return false;
+  }
+}
+
+// Zatwierdzenie odpowiedzi. Wczesniej bledy klikniecia byly polykane przez
+// .catch(() => {}), wiec nieklikniety przycisk (np. niewidoczny, tak jak
+// przycisk odswiezania) byl nieodrozninalny od poprawnie wyslanej odpowiedzi -
+// a nastepnym, co widac w logu, jest juz tylko blad hCaptchy.
+async function clickSubmit(frame, log) {
+  const all = frame.locator('.button-submit, .verify-button');
+  const n = await all.count();
+  if (!n) {
+    log('[GPU-AI] Nie znaleziono przycisku zatwierdzenia.');
+    return false;
+  }
+  for (let i = 0; i < n; i++) {
+    const el = all.nth(i);
+    if (!(await el.isVisible().catch(() => false))) continue;
+    try {
+      await el.click({ timeout: 5000 });
+      return true;
+    } catch (e) {
+      log(`[GPU-AI] Kliknięcie zatwierdzenia nie powiodło się: ${(e && e.message) || e}`);
+      return false;
+    }
+  }
+  log(`[GPU-AI] Żaden z ${n} przycisków zatwierdzenia nie jest widoczny`
+    + ' – wysyłam zdarzenie click bezpośrednio.');
+  try {
+    await all.first().dispatchEvent('click');
+    return true;
+  } catch (e) {
+    log(`[GPU-AI] Zatwierdzenie nieudane: ${(e && e.message) || e}`);
     return false;
   }
 }
@@ -350,10 +416,7 @@ async function playRound(frame, log, page, opts) {
       return 'solver-odmowil';
     }
 
-    const submitPos = frame.locator('.button-submit, .verify-button').first();
-    if (await submitPos.count()) {
-      await submitPos.click({ timeout: 5000 }).catch(() => {});
-    }
+    if (!(await clickSubmit(frame, log))) return 'brak-zatwierdzenia';
     return 'zatwierdzone';
   }
 
@@ -379,18 +442,30 @@ async function playRound(frame, log, page, opts) {
     return 'solver-odmowil';
   }
 
+  // Nieudane klikniecia byly dotad polykane w cichosci, wiec zatwierdzenie
+  // PUSTEJ odpowiedzi wygladalo w logu identycznie jak poprawna runda.
+  let clicked = 0;
+  const failed = [];
   for (const idx of picks) {
     if (idx < 0 || idx >= count) continue;
-    await tileLoc.nth(idx).click({ timeout: 5000 }).catch(() => {});
+    try {
+      await tileLoc.nth(idx).click({ timeout: 5000 });
+      clicked++;
+    } catch (e) {
+      failed.push(idx);
+    }
     await frame.page().waitForTimeout(250 + Math.random() * 250);
   }
-
-  const submit = frame.locator('.button-submit, .verify-button').first();
-  if (!(await submit.count())) {
-    log('[GPU-AI] Nie znaleziono przycisku zatwierdzenia.');
-    return 'brak-zatwierdzenia';
+  if (failed.length) {
+    log(`[GPU-AI] Nie udało się kliknąć kafelków [${failed.join(', ')}]`
+      + ` – zaznaczono ${clicked}/${picks.length}.`);
   }
-  await submit.click({ timeout: 5000 });
+  if (!clicked) {
+    log('[GPU-AI] Żaden kafelek nie został zaznaczony - nie zatwierdzam pustej odpowiedzi.');
+    return 'solver-odmowil';
+  }
+
+  if (!(await clickSubmit(frame, log))) return 'brak-zatwierdzenia';
   return 'zatwierdzone';
 }
 
