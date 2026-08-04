@@ -28,6 +28,10 @@ const LOG_KEEP = parseInt(process.env.LOG_KEEP || '800', 10);
 const LOG_UI_LIMIT = parseInt(process.env.LOG_UI_LIMIT || '150', 10);
 const QUEST_DEBUG = process.env.QUEST_DEBUG !== 'false';
 
+// Ile czekac na dokonczenie rozwiazywania CAPTCHA, zanim zamkniemy przegladarke
+// konta. Cztery rundy wyzwania z inferencja na GPU potrafia zajac ~2 minuty.
+const CAPTCHA_DRAIN_MS = parseInt(process.env.CAPTCHA_DRAIN_MS || '150000', 10);
+
 // Keep WebRTC from punching UDP straight out of the box and revealing the real
 // IP while every HTTP request goes through the proxy. Only applied to proxied
 // browsers – without a proxy there is nothing to leak past.
@@ -755,6 +759,14 @@ class Engine extends EventEmitter {
     const context = await this._openProfile(acc, proxy, profileDir);
     acc._context = context;
 
+    // Rozwiazywanie captchy zyje na WLASNEJ stronie w tym samym kontekscie i
+    // trwa dziesiatki sekund. Blok finally ponizej zamyka kontekst, wiec bez
+    // tego rejestru kazde zakonczenie glownego evaluate - takze awaryjne, np.
+    // gdy Discord przeladuje strone - ubijalo mostek w polowie roboty. Objaw:
+    // "Target page, context or browser has been closed" kilka sekund po
+    // otwarciu wyzwania.
+    const pendingSolves = new Set();
+
     // Line the JS-visible fingerprint up with the context options before any
     // Discord script runs.
     try { await context.addInitScript(initScript(fp)); } catch (_) {}
@@ -856,12 +868,16 @@ class Engine extends EventEmitter {
       // Mostek captchy musi zyc po stronie Playwrighta: ramka hCaptcha jest
       // cross-origin, wiec wstrzykniety JS jej nie dosiegnie, a Playwright tak.
       await page.exposeFunction('__questSolveCaptcha', async (challenge) => {
-        try {
-          return await solveCaptcha(context, challenge, m => this._log(acc, m));
-        } catch (e) {
-          this._log(acc, '[GPU-AI] Mostek captchy zawiódł: ' + shortError(e));
-          return null;
-        }
+        const job = (async () => {
+          try {
+            return await solveCaptcha(context, challenge, m => this._log(acc, m));
+          } catch (e) {
+            this._log(acc, '[GPU-AI] Mostek captchy zawiódł: ' + shortError(e));
+            return null;
+          }
+        })();
+        pendingSolves.add(job);
+        try { return await job; } finally { pendingSolves.delete(job); }
       });
 
       // Bledy ze strony trafialy dotad w prozne - konsola przegladarki jest
@@ -870,7 +886,23 @@ class Engine extends EventEmitter {
       page.on('console', m => {
         if (m.type() === 'error') this._log(acc, 'console.error: ' + m.text().slice(0, 300));
       });
-      const result = await page.evaluate(INJECT_SCRIPT);
+      // Bez tego zakonczenie glownego skryptu z powodu przeladowania strony
+      // bylo nieodroznialne od jego normalnego konca - a w logu zostawal tylko
+      // skutek uboczny ("Target page ... has been closed") zglaszany przez
+      // mostek captchy, ktory ginal razem z kontekstem.
+      page.on('crash', () => this._log(acc, 'Strona Discorda padła (crash przeglądarki).'));
+      page.on('close', () => this._log(acc, 'Strona Discorda została zamknięta.'));
+      page.on('framenavigated', (f) => {
+        if (f === page.mainFrame()) this._log(acc, 'Nawigacja strony: ' + f.url().slice(0, 120));
+      });
+
+      let result;
+      try {
+        result = await page.evaluate(INJECT_SCRIPT);
+      } catch (e) {
+        this._log(acc, 'Główny skrypt przerwany: ' + shortError(e));
+        throw e;
+      }
 
       if (result?.fatal) {
         this._push(acc, { status: 'error', message: result.fatal });
@@ -878,6 +910,24 @@ class Engine extends EventEmitter {
         this._push(acc, { status: 'done', message: 'Finished' });
       }
     } finally {
+      // Nie wyrywamy przegladarki spod trwajacego rozwiazywania captchy.
+      // Limit jest po to, zeby zawieszony mostek nie trzymal konta w
+      // nieskonczonosc - po nim zamykamy mimo wszystko.
+      if (pendingSolves.size) {
+        this._log(acc, `Czekam na ${pendingSolves.size} trwające rozwiązywanie`
+          + ' CAPTCHA przed zamknięciem przeglądarki…');
+        let timer = null;
+        await Promise.race([
+          Promise.allSettled([...pendingSolves]),
+          new Promise(r => { timer = setTimeout(r, CAPTCHA_DRAIN_MS); }),
+        ]);
+        if (timer) clearTimeout(timer);
+        if (pendingSolves.size) {
+          this._log(acc, `Mostek captchy nie zdążył w ${Math.round(CAPTCHA_DRAIN_MS / 1000)}s`
+            + ' – zamykam przeglądarkę mimo to.');
+        }
+      }
+
       // Save unconditionally, before closing. The runs worth persisting are the
       // ones that did NOT finish cleanly – a CAPTCHA you just solved by hand, or
       // an account stopped mid-quest. Saving only on success threw exactly those

@@ -513,7 +513,17 @@ async function solveCaptcha(context, challenge, log) {
     log(`[GPU-AI] Wyczerpano ${MAX_ROUNDS} rund bez tokenu.`);
     return null;
   } catch (e) {
-    log(`[GPU-AI] Mostek captchy przerwany: ${(e && e.message) || e}`);
+    const msg = String((e && e.message) || e);
+    // Ten blad nie pochodzi z captchy - ktos zamknal przegladarke pod mostkiem
+    // (koniec biegu konta, Stop w panelu, przeladowanie strony Discorda).
+    // Bez rozroznienia wyglada to na awarie rozwiazywania, czyli myli trop.
+    if (/has been closed|Target closed|Browser closed|Execution context was destroyed/i.test(msg)) {
+      log('[GPU-AI] Przeglądarka zamknięta w trakcie rozwiązywania CAPTCHA'
+        + ' – to nie jest błąd wyzwania, tylko koniec sesji konta pod mostkiem.'
+        + ` (${msg.slice(0, 120)})`);
+    } else {
+      log(`[GPU-AI] Mostek captchy przerwany: ${msg}`);
+    }
     return null;
   } finally {
     if (page) { try { await page.close(); } catch (_) {} }
