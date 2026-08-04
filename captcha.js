@@ -38,6 +38,12 @@ const MAX_REROLLS = parseInt(process.env.CAPTCHA_REROLLS || '3', 10);
 // zgodnej z reszta odcisku przegladarki.
 const CAPTCHA_LANG = process.env.CAPTCHA_LANG || 'en';
 
+// Prog wykrywania pustego zrzutu. Jednolita plama koloru kompresuje sie w PNG
+// do kilkuset bajtow, a prawdziwe wyzwanie to dziesiatki kilobajtow - roznica
+// jest na tyle duza, ze wystarczy rozmiar pliku i nie trzeba dekodowac obrazu.
+const MIN_AREA_SHOT_BYTES = parseInt(process.env.CAPTCHA_MIN_SHOT_BYTES || '3000', 10);
+const MIN_TILE_SHOT_BYTES = parseInt(process.env.CAPTCHA_MIN_TILE_BYTES || '900', 10);
+
 function pageHtml(sitekey, rqdata) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>verify</title></head>
 <body style="background:#1a1a1e">
@@ -381,6 +387,21 @@ async function playRound(frame, log, page, opts) {
     // Zrzut PRZED pomiarem: screenshot() przewija element do widoku, wiec
     // prostokat musi pochodzic z tego samego stanu strony co obrazek.
     const shot = await area.loc.screenshot({ timeout: 10000 });
+
+    // Ramka hCaptchy jest cross-origin, wiec Chromium renderuje ja w osobnym
+    // procesie (OOPIF). W trybie headless, gdy strona nie jest na wierzchu,
+    // taka ramka potrafi w ogole nie trafic do kompozycji - zrzut wychodzi
+    // wtedy jednolicie szary (samo tlo strony), a model dostaje PUSTY obrazek
+    // i "uziemia sie" na niczym. Wygladalo to jak slabosc modelu, a bylo
+    // brakiem danych wejsciowych.
+    if (shot.length < MIN_AREA_SHOT_BYTES) {
+      log(`[GPU-AI] Zrzut obszaru wyzwania jest pusty (${shot.length} B < `
+        + `${MIN_AREA_SHOT_BYTES} B) - ramka hCaptcha nie została namalowana.`
+        + ' Nie wysyłam pustego obrazka do modelu.');
+      if (page) await dumpState(page, log, 'pusty-zrzut');
+      return 'pusty-zrzut';
+    }
+
     const box = await area.loc.boundingBox();
     if (!box) {
       log('[GPU-AI] Obszar wyzwania zniknął po zrzucie.');
@@ -426,9 +447,23 @@ async function playRound(frame, log, page, opts) {
   }
 
   const tiles = [];
+  let blankTiles = 0;
   for (let i = 0; i < count; i++) {
     const shot = await tileLoc.nth(i).screenshot({ timeout: 10000 });
+    if (shot.length < MIN_TILE_SHOT_BYTES) blankTiles++;
     tiles.push('data:image/png;base64,' + shot.toString('base64'));
+  }
+
+  // Ta sama pulapka co przy zadaniach pozycyjnych: puste kafelki oznaczaja, ze
+  // ramka nie zostala namalowana, a nie ze model sie myli.
+  if (blankTiles === count) {
+    log(`[GPU-AI] Wszystkie ${count} kafelków to puste obrazki - ramka hCaptcha`
+      + ' nie została namalowana. Nie wysyłam ich do modelu.');
+    if (page) await dumpState(page, log, 'puste-kafelki');
+    return 'pusty-zrzut';
+  }
+  if (blankTiles) {
+    log(`[GPU-AI] Uwaga: ${blankTiles}/${count} kafelków wygląda na puste.`);
   }
   log(`[GPU-AI] Zrzucono ${tiles.length} kafelków, wysyłam do GPU...`);
 
@@ -485,6 +520,13 @@ async function solveCaptcha(context, challenge, log) {
   try {
     page = await context.newPage();
     page.setDefaultTimeout(20000);
+
+    // Karta MUSI byc aktywna. Strona konta zostaje otwarta obok, wiec bez tego
+    // strona wyzwania jest kartą w tle: document.visibilityState = 'hidden',
+    // a Chromium potrafi wtedy nie kompozytowac cross-originowej ramki
+    // hCaptchy. Objaw: zrzuty wychodza jednolicie szare, kontrolki raportuja
+    // "element is not visible", a model dostaje pusty obrazek.
+    await page.bringToFront().catch(() => {});
 
     // Ta sama domena co prawdziwy klient - hCaptcha wiaze wyzwanie z hostem.
     await page.route(CAPTCHA_URL, route => route.fulfill({
@@ -551,6 +593,9 @@ async function solveCaptcha(context, challenge, log) {
         return null;
       }
 
+      // Konto pracuje na sasiedniej karcie i moze ja w miedzyczasie przejac.
+      await page.bringToFront().catch(() => {});
+
       log(`[GPU-AI] Runda ${round}/${MAX_ROUNDS}`);
       // Gdy przelosowania sie skoncza, przestajemy wybrzydzac i probujemy
       // rozwiazac to, co dostalismy - lepsza slaba proba niz zadna.
@@ -571,6 +616,13 @@ async function solveCaptcha(context, challenge, log) {
         if (status !== 'pozycyjne') return null;
         rerolls = MAX_REROLLS;
         continue;
+      }
+
+      if (status === 'pusty-zrzut') {
+        log('[GPU-AI] Przerywam: bez obrazu wyzwania rozwiązanie jest niemożliwe.'
+          + ' Ramka hCaptcha jest w DOM, ale nie zostaje namalowana - typowo'
+          + ' przy headless. Wyłącz tryb headless w panelu i sprawdź ponownie.');
+        return null;
       }
 
       if (status !== 'zatwierdzone') {
