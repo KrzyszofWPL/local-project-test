@@ -1,8 +1,5 @@
 module.exports = `(async () => {
-  // Second layer of protection against double injection: even if the script
-  // were injected twice into the same page, the second instance exits right
-  // away. Two loops on the same account would enroll into the same quest
-  // and trip each other's rate limits.
+  // Second layer of protection against double injection
   if (window.__questBotActive) return { fatal: 'script already running in this tab' };
   window.__questBotActive = true;
 
@@ -43,10 +40,6 @@ module.exports = `(async () => {
   if (!api) return { fatal: 'api module not found' };
 
   // ── API call layer ────────────────────────────────────────────────────────
-  // Defined up front so every request – including the early /quests/@me fetch –
-  // goes through the same timeout + rate-limit handling. Discord API calls can
-  // simply never return (rate limit, dropped session); without a timeout the
-  // loop sits silently and looks stuck.
   const withTimeout = (p, ms, label) => Promise.race([
     p,
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
@@ -54,10 +47,6 @@ module.exports = `(async () => {
 
   const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
 
-  // A rate limit is a request to slow down, not a refusal. The distinction
-  // matters: treating it like an error and retrying with a different task
-  // only makes the limit worse. The Polish fragment below matches Discord's
-  // own rate-limit message, since the session locale is pl-PL.
   const isRateLimit = (e) => {
     if (!e) return false;
     if (e.status === 429) return true;
@@ -69,8 +58,6 @@ module.exports = `(async () => {
     return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
   };
 
-  // Every API call goes through: a timeout, plus patient waiting out of any
-  // rate limit.
   const apiCall = async (method, url, body, label) => {
     let lastErr = null;
     for (let attempt = 0; attempt < 5; attempt++) {
@@ -91,7 +78,30 @@ module.exports = `(async () => {
     throw lastErr;
   };
 
-  // Account identity for the panel (username, avatar, email)
+  // ── Odczyt stanu z ODPOWIEDZI SERWERA (nie z lokalnych liczników) ─────────
+  const progressOf = (body, taskName) => {
+    if (!body) return null;
+    const sources = [
+      body.progress,
+      body.userStatus && body.userStatus.progress,
+      body.user_status && body.user_status.progress,
+    ];
+    for (const p of sources) {
+      if (p && p[taskName] && typeof p[taskName].value === 'number') return p[taskName].value;
+    }
+    return null;
+  };
+
+  const completedOf = (body) => {
+    if (!body) return false;
+    const sources = [body, body.userStatus, body.user_status];
+    for (const s of sources) {
+      if (s && (s.completed_at != null || s.completedAt != null)) return true;
+    }
+    return false;
+  };
+
+  // Identity
   try {
     const u = UserStore && UserStore.getCurrentUser && UserStore.getCurrentUser();
     if (u) R({
@@ -105,12 +115,11 @@ module.exports = `(async () => {
     });
   } catch(_) {}
 
-  // DiscordNative stub – unlocks the PLAY/STREAM code path in the client
   if (typeof DiscordNative === 'undefined') {
     try {
       window.DiscordNative = {
         process: { platform: 'win32', arch: 'x64' },
-        app: { getModuleVersions: () => ({}), getPath: () => 'C:\\\\Users' },
+        app: { getModuleVersions: () => ({}), getPath: () => 'C:\\\\\\\\Users' },
         os: { release: '10.0.26100' },
         window: { setDevtoolsCallbacks: () => {} },
       };
@@ -120,8 +129,6 @@ module.exports = `(async () => {
   // ── 3. Wait for quests ────────────────────────────────────────────────────
   for (let i = 0; i < 45 && QuestsStore.quests.size === 0; i++) await sleep(1000);
 
-  // The store hands out camelCase objects, the raw API answers in snake_case.
-  // Normalising once means nothing downstream has to care which one it got.
   const camel = (v) => {
     if (Array.isArray(v)) return v.map(camel);
     if (v && typeof v === 'object' && v.constructor === Object) {
@@ -134,25 +141,43 @@ module.exports = `(async () => {
     return v;
   };
 
-  // On some accounts the client never pushes the quest list into the store -
-  // it only fetches it once something asks. Asking the API directly beats
-  // reporting "no quests" on an account that has plenty.
+  // Discord dokleja do listy questow zapieczetowany blob atrybucyjny, ktory
+  // prawdziwy klient odsyla z powrotem przy /enroll i /claim-reward.
+  // Bez niego oba requesty moga byc odrzucone - dlatego pobieramy liste ZAWSZE.
+  let sealedByQuest = {};
+  let sealedGlobal = null;
+
+  const pickSealed = (o) => {
+    if (!o || typeof o !== 'object') return null;
+    return o.traffic_metadata_sealed || o.trafficMetadataSealed || null;
+  };
+
   let apiQuests = [];
-  if (QuestsStore.quests.size === 0) {
-    try {
-      const res = await apiCall('GET', '/quests/@me', null, 'quests-list');
-      const raw = (res && res.body && (res.body.quests || res.body)) || [];
-      apiQuests = (Array.isArray(raw) ? raw : []).map(camel);
-      log('QuestsStore stayed empty - fetched ' + apiQuests.length + ' quest(s) from the API');
-    } catch(e) {
-      log('QuestsStore is empty and /quests/@me failed: ' + ((e && e.message) || e));
+  try {
+    const res = await apiCall('GET', '/quests/@me', null, 'quests-list');
+    const body = (res && res.body) || {};
+    const raw = body.quests || (Array.isArray(body) ? body : []) || [];
+    const rawList = Array.isArray(raw) ? raw : [];
+
+    sealedGlobal = pickSealed(body);
+    for (const rq of rawList) {
+      const s = pickSealed(rq);
+      if (rq && rq.id && s) sealedByQuest[rq.id] = s;
     }
+    log('Blob atrybucyjny: globalny=' + (sealedGlobal ? 'jest' : 'brak')
+        + ', per-quest=' + Object.keys(sealedByQuest).length);
+
+    if (QuestsStore.quests.size === 0) {
+      apiQuests = rawList.map(camel);
+      log('QuestsStore stayed empty - fetched ' + apiQuests.length + ' quest(s) from API');
+    }
+  } catch(e) {
+    log('/quests/@me failed: ' + ((e && e.message) || e));
   }
 
-  const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
+  const sealedFor = (questId) => sealedByQuest[questId] || sealedGlobal || null;
 
-  const opts = window.__questOpts || {};
-  const onlyOrbs = !!opts.onlyOrbs;
+  const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
 
   const rewardsOf = (q) => {
     try {
@@ -162,9 +187,6 @@ module.exports = `(async () => {
     } catch(_) { return []; }
   };
 
-  // Orbs have their own quantity field. The previous version also summed the
-  // generic 'quantity' field, which made cosmetic rewards (avatar frames,
-  // profile effects) count as orbs.
   const orbsOf = (q) => {
     let sum = 0;
     for (const r of rewardsOf(q)) {
@@ -174,8 +196,6 @@ module.exports = `(async () => {
     return sum;
   };
 
-  // Reward description for the panel and for diagnostics – lets you verify
-  // orb detection against real data.
   const rewardInfo = (q) => rewardsOf(q).map(r => ({
     type: r.type,
     orbs: r.orbQuantity != null ? r.orbQuantity : r.orb_quantity,
@@ -183,16 +203,18 @@ module.exports = `(async () => {
   }));
 
   const all = apiQuests.length ? apiQuests : [...QuestsStore.quests.values()];
+
   const pending = all.filter(q => {
     const tc = q.config && (q.config.taskConfig || q.config.taskConfigV2);
-    return q.config && !(q.userStatus && q.userStatus.completedAt)
+    const isClaimed = !!(q.userStatus && q.userStatus.claimedAt);
+    
+    return q.config 
+        && !isClaimed
         && new Date(q.config.expiresAt).getTime() > Date.now()
         && tc && tc.tasks
         && SUPPORTED.some(t => t in tc.tasks);
   });
 
-  // Order: video (seconds) -> activity -> game. Fast and reliable first, so
-  // one stuck game quest doesn't hold up the rest.
   const PRIORITY = { WATCH_VIDEO: 0, WATCH_VIDEO_ON_MOBILE: 0, PLAY_ACTIVITY: 1, PLAY_ON_DESKTOP: 2, STREAM_ON_DESKTOP: 3 };
   const taskOf = q => {
     const tc = q.config.taskConfig || q.config.taskConfigV2;
@@ -200,32 +222,9 @@ module.exports = `(async () => {
   };
   pending.sort((a, b) => (PRIORITY[taskOf(a)] ?? 9) - (PRIORITY[taskOf(b)] ?? 9));
 
-  // Skip quests without orbs (e.g. avatar frame only) – if configured that way
-  const skipped = [];
   let selected = pending;
-  if (onlyOrbs) {
-    selected = [];
-    for (const q of pending) {
-      if (orbsOf(q) > 0) selected.push(q);
-      else skipped.push(q);
-    }
-    if (skipped.length) {
-      log('Skipped ' + skipped.length + ' quest(s) without orbs: '
-        + skipped.map(q => (q.config.messages && q.config.messages.questName) || q.id).join(', '));
-    }
-  }
 
-  R({ t: 'skipped', list: skipped.map(q => {
-    const tc = q.config.taskConfig || q.config.taskConfigV2;
-    const task = SUPPORTED.find(t => tc.tasks[t] != null);
-    return {
-      id: q.id,
-      name: (q.config.messages && q.config.messages.questName) || q.id,
-      task: task,
-      target: tc.tasks[task].target,
-      rewards: rewardInfo(q),
-    };
-  }) });
+  R({ t: 'skipped', list: [] });
 
   R({ t: 'quests', total: all.length, pending: selected.length,
       list: selected.map(q => {
@@ -244,12 +243,8 @@ module.exports = `(async () => {
       }) });
 
   // ── 4. Quest enrollment ───────────────────────────────────────────────────
-  log('Found ' + selected.length + ' quest(s) to do (out of ' + all.length + ' visible)');
+  log('Found ' + selected.length + ' quest(s) to process');
 
-
-  // A 'location' value that works once will work for later quests too.
-  // Without caching it we'd try 7 variants per quest, which quickly trips
-  // the rate limit and causes long waits inside Discord's api module.
   let knownLoc = null;
 
   const enroll = async (quest) => {
@@ -258,25 +253,21 @@ module.exports = `(async () => {
       ? [knownLoc].concat(base.filter(l => l !== knownLoc))
       : base;
 
+    const sealed = sealedFor(quest.id);
+
     let lastErr = null;
     for (const loc of locations) {
       try {
-        await apiCall('POST', '/quests/' + quest.id + '/enroll', { location: loc }, 'enroll');
+        const body = { location: loc };
+        if (sealed) body.traffic_metadata_sealed = sealed;
+        await apiCall('POST', '/quests/' + quest.id + '/enroll', body, 'enroll');
         knownLoc = loc;
         return { ok: true, loc: loc };
       } catch(e) {
         const msg = errMsg(e);
         lastErr = msg;
-
-        // Rate limited despite retries – trying more location values won't
-        // help, since the value isn't the problem. Bail out and retry later.
-        if (isRateLimit(e)) {
-          return { ok: false, err: msg, rateLimited: true };
-        }
-        if (/captcha|verif/i.test(String(msg))) {
-          return { ok: false, err: msg, captcha: true };
-        }
-        log('  enroll location=' + loc + ' -> ' + msg);
+        if (isRateLimit(e)) return { ok: false, err: msg, rateLimited: true };
+        if (/captcha|verif/i.test(String(msg))) return { ok: false, err: msg, captcha: true };
       }
     }
 
@@ -288,7 +279,19 @@ module.exports = `(async () => {
     }
   };
 
-  // ── 5. Single quest ───────────────────────────────────────────────────────
+  // ── 5. Single quest logic ──────────────────────────────────────────────────
+  const finishQuest = async (quest, orbs) => {
+    const success = await claimReward(quest);
+    if (success) {
+      // orbs pochodzi z configu questa (wartosc nominalna), nie z odpowiedzi claimu.
+      R({ t: 'qdone', id: quest.id, name: nameOf(quest), orbs: orbs, verified: !!success.verified });
+      log('Quest zaliczony i nagroda odebrana: ' + nameOf(quest)
+          + (success.verified ? ' (potwierdzone)' : ' (NIEpotwierdzone)'));
+    } else {
+      log('Nie udało się odebrać nagrody dla: ' + nameOf(quest) + ' - pomijam dodawanie orbów.');
+    }
+  };
+
   const doQuest = async (quest) => {
     const name = (quest.config.messages && quest.config.messages.questName) || quest.id;
     const tc = quest.config.taskConfig || quest.config.taskConfigV2;
@@ -296,24 +299,27 @@ module.exports = `(async () => {
     const taskData = tc.tasks[taskName];
     const secondsNeeded = taskData.target;
     const applicationId = (quest.config.application && quest.config.application.id)
-                       || (taskData.applications && taskData.applications[0] && taskData.applications[0].id);
+                        || (taskData.applications && taskData.applications[0] && taskData.applications[0].id)
+                        || "1070163152288542720";
     let secondsDone = (quest.userStatus && quest.userStatus.progress && quest.userStatus.progress[taskName] && quest.userStatus.progress[taskName].value) || 0;
     const orbs = orbsOf(quest);
 
     R({ t: 'qstart', id: quest.id, name: name, task: taskName, target: secondsNeeded, done: secondsDone, orbs: orbs });
+
+    if (quest.userStatus && quest.userStatus.completedAt) {
+      log('Quest "' + name + '" jest juz ukończony! Odbieranie nagrody...');
+      await finishQuest(quest, orbs);
+      return;
+    }
+
     log('Start: ' + name + ' [' + taskName + '] ' + secondsDone + '/' + secondsNeeded + 's');
 
     if (!(quest.userStatus && quest.userStatus.enrolledAt)) {
       log('Enrolling in quest...');
       const e = await enroll(quest);
       if (!e.ok) {
-        // A CAPTCHA needs a human. Suspend and wait for you to solve it in this
-        // account's window, then retry the enrollment.
         if (e.captcha) {
           R({ t: 'qerr', id: quest.id, err: 'enroll: ' + e.err, captcha: true });
-          let solved = false;
-          try { solved = await awaitVerify(quest.id, 'Enroll: ' + name); } catch(_) {}
-          if (solved) return { retry: true, err: 'retrying after verification' };
           return;
         }
         return { retry: true, err: 'enroll: ' + e.err, rateLimited: !!e.rateLimited };
@@ -322,10 +328,11 @@ module.exports = `(async () => {
       await sleep(500);
     }
 
-    // ── WATCH_VIDEO ─────────────────────────────────────────────────────────
     if (taskName === 'WATCH_VIDEO' || taskName === 'WATCH_VIDEO_ON_MOBILE') {
       const speed = 7;
       let completed = false;
+      let serverDone = secondsDone;
+      let stalledVideo = 0;
       while (true) {
         const remaining = Math.min(speed, secondsNeeded - secondsDone);
         await sleep(remaining * 1000);
@@ -340,23 +347,47 @@ module.exports = `(async () => {
           log('video-progress failed after ' + Math.round((Date.now()-t0)/1000) + 's: ' + msg);
           return { retry: true, err: 'video-progress: ' + msg, rateLimited: isRateLimit(e) };
         }
-        completed = res.body && res.body.completed_at != null;
+        completed = completedOf(res.body);
+
+        // Postep raportowany przez serwer - to jedyne zrodlo prawdy.
+        const srv = progressOf(res.body, taskName);
+        if (srv != null) {
+          if (srv > serverDone) { serverDone = srv; stalledVideo = 0; }
+          else { stalledVideo += speed; }
+        }
+
+        // Licznik lokalny sluzy WYLACZNIE do tempa wysylki, nie do raportowania.
         secondsDone = Math.min(secondsNeeded, timestamp);
-        R({ t: 'qprog', id: quest.id, done: secondsDone, target: secondsNeeded });
-        log('video ' + secondsDone + '/' + secondsNeeded + 's (' + (Date.now()-t0) + 'ms)');
+
+        R({ t: 'qprog', id: quest.id, done: srv != null ? serverDone : null,
+            target: secondsNeeded, sent: secondsDone, serverTracked: srv != null });
+        log('video: serwer ' + (srv != null ? serverDone : '?') + '/' + secondsNeeded
+            + 's | wyslano ' + secondsDone + 's (' + (Date.now()-t0) + 'ms)');
+
+        if (completed) break;
+        if (stalledVideo >= 60) {
+          return { retry: true, err: 'serwer nie nalicza postepu video (0s przez ' + stalledVideo + 's)' };
+        }
         if (timestamp >= secondsNeeded) break;
       }
       if (!completed) {
         try {
-          await apiCall('POST', '/quests/' + quest.id + '/video-progress',
+          const fin = await apiCall('POST', '/quests/' + quest.id + '/video-progress',
             { timestamp: secondsNeeded }, 'video-progress final');
-        } catch(_) {}
+          completed = completedOf(fin && fin.body);
+        } catch(e) {
+          log('video-progress final nie powiodl sie: ' + errMsg(e));
+        }
+      }
+      if (!completed) {
+        // Bez potwierdzenia z serwera NIE probujemy claimu i NIE raportujemy sukcesu.
+        R({ t: 'qerr', id: quest.id, err: 'serwer nie oznaczyl questa jako ukonczony - nagroda nie odebrana' });
+        return { retry: true, err: 'video: brak completed_at z serwera' };
       }
       await finishQuest(quest, orbs);
       return;
     }
 
-    // ── PLAY_ACTIVITY ───────────────────────────────────────────────────────
     if (taskName === 'PLAY_ACTIVITY') {
       let channelId = null;
       try {
@@ -385,7 +416,7 @@ module.exports = `(async () => {
           break;
         }
 
-        const progress = (res.body && res.body.progress && res.body.progress.PLAY_ACTIVITY && res.body.progress.PLAY_ACTIVITY.value) || 0;
+        const progress = progressOf(res.body, 'PLAY_ACTIVITY') || 0;
         if (progress > secondsDone) { secondsDone = progress; stalledA = 0; }
         else { stalledA += 20; }
 
@@ -409,23 +440,35 @@ module.exports = `(async () => {
       return;
     }
 
-    // ── PLAY_ON_DESKTOP ─────────────────────────────────────────────────────
     if (taskName === 'PLAY_ON_DESKTOP') {
       if (!RunningGameStore || !FluxDispatcher) {
         R({ t: 'qerr', id: quest.id, err: 'RunningGameStore/FluxDispatcher not found' }); return;
       }
       const pid = Math.floor(Math.random() * 30000) + 1000;
-      const res = await apiCall('GET', '/applications/public?application_ids=' + applicationId, null, 'applications');
-      const appData = res.body[0];
-      const exe = appData.executables && appData.executables.find(x => x.os === 'win32');
-      const exeName = (exe && exe.name && exe.name.replace('>','')) || appData.name.replace(/[\\/\\\\:*?"<>|]/g, '');
+      
+      let appName = (quest.config && quest.config.application && quest.config.application.name) || name;
+      let exeName = appName.replace(/[^a-zA-Z0-9]/g, '') + '.exe';
+
+      // Safe fetch app details without breaking on missing auth/application
+      if (applicationId) {
+        try {
+          const res = await apiCall('GET', '/applications/' + applicationId + '/public', null, 'applications');
+          if (res && res.body) {
+            if (res.body.name) appName = res.body.name;
+            const exe = res.body.executables && res.body.executables.find(x => x.os === 'win32');
+            if (exe && exe.name) exeName = exe.name.replace('>', '');
+          }
+        } catch(_) {
+          log('Ignoruję błąd autoryzacji publicznego API gier, używam domyślnej nazwy: ' + appName);
+        }
+      }
 
       const fakeGame = {
-        cmdLine: 'C:\\\\Program Files\\\\' + appData.name + '\\\\' + exeName,
+        cmdLine: 'C:\\\\\\\\Program Files\\\\\\\\CustomGame\\\\\\\\' + exeName,
         exeName: exeName,
-        exePath: 'c:/program files/' + appData.name.toLowerCase() + '/' + exeName,
-        hidden: false, isLauncher: false, id: applicationId, name: appData.name,
-        pid: pid, pidPath: [pid], processName: appData.name, start: Date.now(),
+        exePath: 'c:/program files/customgame/' + exeName,
+        hidden: false, isLauncher: false, id: applicationId, name: appName,
+        pid: pid, pidPath: [pid], processName: appName, start: Date.now(),
       };
       const realGames = RunningGameStore.getRunningGames();
       const fakeGames = [fakeGame];
@@ -441,9 +484,7 @@ module.exports = `(async () => {
         try { FluxDispatcher.dispatch({ type: 'RUNNING_GAMES_CHANGE', removed: [fakeGame], added: [], games: [] }); } catch(_) {}
       };
 
-      // The web client doesn't run its own heartbeat loop for games, so we
-      // send them ourselves - just like the desktop client does.
-      log('Impersonating game: ' + appData.name);
+      log('Impersonating game: ' + appName);
 
       let stalled = 0;
       let ok = false;
@@ -459,8 +500,7 @@ module.exports = `(async () => {
           break;
         }
 
-        const prog = res2.body && res2.body.progress && res2.body.progress.PLAY_ON_DESKTOP;
-        const p = (prog && prog.value) || 0;
+        const p = progressOf(res2.body, 'PLAY_ON_DESKTOP') || 0;
 
         if (p > secondsDone) { secondsDone = p; stalled = 0; }
         else { stalled += 20; }
@@ -476,7 +516,6 @@ module.exports = `(async () => {
           break;
         }
 
-        // Backend isn't tracking progress – further waiting won't help
         if (stalled >= 120) {
           failErr = 'backend is not tracking progress for the web client (0s for 2 min)';
           break;
@@ -491,125 +530,243 @@ module.exports = `(async () => {
       return;
     }
 
-    // ── STREAM_ON_DESKTOP ───────────────────────────────────────────────────
     if (taskName === 'STREAM_ON_DESKTOP') {
       R({ t: 'qerr', id: quest.id, err: 'skipped - requires streaming in a voice channel with another person' });
       return;
     }
   };
 
-  // ── 6. Queue ──────────────────────────────────────────────────────────────
-  // A quest that fails is parked at the back of the queue rather than written
-  // off: the same quest that errors on one account goes through on the next,
-  // and often goes through on this one too once the account has done
-  // something else in between. Only a failure a human has to clear (a CAPTCHA,
-  // a missing voice channel) is final straight away.
   const MAX_ATTEMPTS = 3;
   const RETRY_PAUSE = 30000;
-
   const nameOf = q => (q.config && q.config.messages && q.config.messages.questName) || q.id;
 
-// ── Reward claim (Auto-solve AI via local GPU) ─────────────────────────
-  
-  // Lokalny endpoint Twojego serwera AI uruchomionego na RTX 4060
-  const LOCAL_AI_ENDPOINT = 'http://localhost:5000/solve-captcha';
+  // ── Auto-solve AI via local GPU ──────────────────────────────────────
+  const LOCAL_AI_ENDPOINT = 'http://127.0.0.1:5000/analyze-captcha';
 
-  // Zamieniamy ręczne oczekiwanie na automatyczne wywołanie lokalnego AI
-  const awaitVerify = async (questId, contextInfo) => {
-    log('Automatyczne rozwiązywanie CAPTCHA przez lokalne GPU (RTX 4060)...');
-    try {
-      // 1. Wywołanie Twojego lokalnego mikroserwisu AI
-      const response = await fetch(LOCAL_AI_ENDPOINT, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          questId: questId,
-          context: contextInfo,
-          service: 'hcaptcha'
-        })
-      });
-
-      if (!response.ok) {
-        throw new Error('Lokalny serwer AI zwrócił błąd: ' + response.status);
-      }
-
-      const data = await response.json();
-      
-      // Serwer AI powinien zwrócić obiekt np. { success: true, captchaKey: "0_xxxx..." }
-      if (data && data.success && data.captchaKey) {
-        log('Lokalne AI pomyślnie wygenerowało token CAPTCHA!');
-        return data.captchaKey; // Zwracamy token wygenerowany przez AI
-      }
-    } catch (err) {
-      log('Błąd podczas komunikacji z lokalnym AI: ' + errMsg(err));
+  const solveCaptchaVisualOnGPU = async () => {
+    log('[GPU-AI] Poszukiwanie aktywnej ramki hCaptcha na ekranie...');
+    
+    const iframe = document.querySelector('iframe[src*="hcaptcha.com/modules/"]');
+    if (!iframe) {
+      log('[GPU-AI] Nie znaleziono ramki z obrazkami hCaptcha.');
+      return null;
     }
-    return null;
-  };
 
-  const isClaimed = async (quest) => {
+    // Ramka hCaptcha jest cross-origin - dostep do jej DOM rzuca SecurityError.
+    // Bez try/catch wyjatek wychodzil poza IIFE i cicho ubijal caly skrypt.
+    let doc;
     try {
-      const q = QuestsStore.getQuest && QuestsStore.getQuest(quest.id);
-      const us = q && q.userStatus;
-      if (us && (us.claimedAt || us.claimed_at)) return true;
-    } catch(_) {}
-    try {
-      const res = await apiCall('GET', '/quests/@me', null, 'claimed-check');
-      const raw = (res && res.body && (res.body.quests || res.body)) || [];
-      const found = (Array.isArray(raw) ? raw : []).find(x => x && x.id === quest.id);
-      const us = found && (found.user_status || found.userStatus);
-      return !!(us && (us.claimed_at || us.claimedAt));
-    } catch(_) {}
-    return false;
-  };
-
-  // Zmodyfikowana funkcja attemptClaim pozwalająca na przekazanie tokenu z AI
-  const attemptClaim = async (quest, captchaKey = null) => {
-    try {
-      const payload = {};
-      // Jeśli mamy token wygenerowany przez AI, dołączamy go do payloadu
-      if (captchaKey) {
-        payload.captcha_key = captchaKey;
-      }
-
-      await apiCall('POST', '/quests/' + quest.id + '/claim-reward', payload, 'claim');
-      return { ok: true };
+      doc = iframe.contentWindow.document;
+      if (!doc) throw new Error('brak dostepu do dokumentu ramki');
     } catch(e) {
-      const msg = String(errMsg(e));
-      const body = e && e.body;
-      const wantsCaptcha = /captcha|verif/i.test(msg)
-        || !!(body && (body.captcha_key || body.captcha_service || body.captcha_sitekey));
-      if (wantsCaptcha) return { ok: false, captcha: true, err: msg, body: body };
-      if (/already|claimed|not.*eligible|no.*reward/i.test(msg)) return { ok: true, already: true };
-      return { ok: false, err: msg };
+      log('[GPU-AI] Brak dostępu do ramki hCaptcha (cross-origin): ' + ((e && e.message) || e)
+          + ' - CAPTCHA wymaga ręcznego rozwiązania.');
+      return null;
+    }
+
+    const promptEl = doc.querySelector('.prompt-text');
+    const imgEl = doc.querySelector('.challenge-view img, .challenge-container img');
+
+    if (!promptEl || !imgEl) return null;
+
+    const targetText = promptEl.innerText;
+    log('[GPU-AI] Zadanie: "' + targetText + '"');
+
+    const canvas = document.createElement('canvas');
+    canvas.width = imgEl.naturalWidth || imgEl.width;
+    canvas.height = imgEl.naturalHeight || imgEl.height;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(imgEl, 0, 0);
+    const base64Image = canvas.toDataURL('image/png');
+
+    log('[GPU-AI] Przesyłanie obrazu do analizy przez GPU...');
+    const res = await fetch(LOCAL_AI_ENDPOINT, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        image_data: base64Image,
+        target_object: targetText,
+        grid: "3x3"
+      })
+    });
+
+    const data = await res.json();
+    if (!data.success || !data.click_indices) return null;
+
+    log('[GPU-AI] GPU wytypowało kafelki: ' + data.click_indices);
+
+    const tiles = doc.querySelectorAll('.task-image, .tile');
+    for (const index of data.click_indices) {
+      if (tiles[index]) {
+        await sleep(300 + Math.random() * 200);
+        tiles[index].click();
+      }
+    }
+
+    await sleep(500);
+    const verifyBtn = doc.querySelector('.button-submit, .verify-button');
+    if (verifyBtn) verifyBtn.click();
+
+    return await waitForRealToken();
+  };
+
+  const waitForRealToken = () => {
+    return new Promise((resolve) => {
+      let attempts = 0;
+      const check = setInterval(() => {
+        attempts++;
+        const tokenEl = document.querySelector('[name="h-captcha-response"]');
+        if (tokenEl && tokenEl.value && tokenEl.value.length > 30) {
+          clearInterval(check);
+          resolve(tokenEl.value);
+        }
+        if (attempts > 30) {
+          clearInterval(check);
+          resolve(null);
+        }
+      }, 500);
+    });
+  };
+
+  const attemptClaim = async (quest, captchaKey = null) => {
+    const sealed = sealedFor(quest.id);
+
+    // Ksztalt body prawdziwego klienta: odeslany blob atrybucyjny.
+    // Wczesniejsze warianty { platform: 0/1/2, claim_tier } byly zmyslone.
+    const payloads = sealed
+      ? [{ traffic_metadata_sealed: sealed }, {}]
+      : [{}];
+
+    // Wlasciwa sciezka to /claim-reward (zwraca 204). '/claim' nie istnieje -> stad 404.
+    const paths = ['claim-reward'];
+
+    let lastErr = null;
+    let sawNonNotFound = false;
+
+    for (const path of paths) {
+      for (const baseBody of payloads) {
+        try {
+          const body = { ...baseBody };
+          if (captchaKey) body.captcha_key = captchaKey;
+
+          const res = await apiCall('POST', '/quests/' + quest.id + '/' + path, body, 'claim');
+          return { ok: true, status: res.status, body: res.body, path: path };
+        } catch (e) {
+          lastErr = e;
+          const msg = errMsg(e);
+
+          if (/captcha|verif/i.test(String(msg)) || (e && e.status === 400 && e.body && e.body.captcha_key)) {
+            return { captcha: true };
+          }
+
+          // 404 = ten endpoint nie istnieje LUB quest nie jest zapisany.
+          // To NIE jest odebrana nagroda - idziemy do kolejnej ścieżki.
+          if (e && e.status === 404) break;
+
+          sawNonNotFound = true;
+          // 400/403 moga oznaczac zly ksztalt payloadu - probujemy kolejny wariant.
+          if (e && (e.status === 400 || e.status === 403)) continue;
+          break;
+        }
+      }
+    }
+
+    return {
+      ok: false,
+      err: errMsg(lastErr) + (sawNonNotFound ? '' : ' (404 na /claim-reward - quest nieznany lub brak zapisu?)'),
+      status: lastErr ? lastErr.status : null,
+    };
+  };
+
+  // Potwierdzenie u zrodla: czy quest ma faktycznie ustawione claimedAt?
+  // null = nie udalo sie sprawdzic, true/false = odpowiedz serwera.
+  const verifyClaimed = async (questId) => {
+    try {
+      const res = await apiCall('GET', '/quests/@me', null, 'verify-claim');
+      const raw = (res && res.body && (res.body.quests || res.body)) || [];
+      const list = (Array.isArray(raw) ? raw : []).map(camel);
+      const q = list.find(x => x && x.id === questId);
+      if (!q || !q.userStatus) return null;
+      return !!q.userStatus.claimedAt;
+    } catch(_) {
+      return null;
     }
   };
 
   const claimReward = async (quest) => {
+    log('Próba odebrania nagrody dla: ' + nameOf(quest));
     let r = await attemptClaim(quest);
-    
+
     if (r.captcha) {
       R({ t: 'qclaim', id: quest.id, state: 'captcha' });
-      log('Napotkano weryfikację dla "' + nameOf(quest) + '" – przekazywanie do lokalnego AI...');
+      log('[GPU-AI] Napotkano CAPTCHA. Przekazuję do serwera Python...');
 
-      // Próbujemy automatycznie rozwiązać weryfikację na GPU
-      const captchaKey = await awaitVerify(quest.id, 'Claim reward: ' + nameOf(quest));
+      let realCaptchaKey = null;
+      try {
+        realCaptchaKey = await solveCaptchaVisualOnGPU();
+      } catch(e) {
+        log('[GPU-AI] Solver zwrócił błąd: ' + ((e && e.message) || e));
+      }
 
-      if (!captchaKey) {
-        log('Nie udało się rozwiązać CAPTCHA przez AI.');
+      if (!realCaptchaKey) {
+        log('[GPU-AI] Brak tokenu z solvera GPU.');
         R({ t: 'qclaim', id: quest.id, state: 'unclaimed' });
-        return;
+        return false;
       }
 
-      if (await isClaimed(quest)) {
-        R({ t: 'qclaim', id: quest.id, state: 'claimed' });
-        return;
-      }
-
-      // Ponowna próba odebrania z przekazanym tokenem rozwiązanym przez AI
-      r = await attemptClaim(quest, captchaKey);
+      log('[GPU-AI] Token odebrany, ponawiam claim...');
+      r = await attemptClaim(quest, realCaptchaKey);
     }
 
-    if (r.ok) R({ t: 'qclaim', id: quest.id, state: 'claimed', already: !!r.already });
-    else if (r.captcha) R({ t: 'qclaim', id: quest.id, state: 'captcha-again' });
-    else R({ t: 'qclaim', id: quest.id, state: 'error', err: r.err });
+    if (r.ok) {
+      const verified = await verifyClaimed(quest.id);
+
+      if (verified === false) {
+        // Serwer przyjal request, ale claimedAt sie nie pojawilo - nagrody NIE ma.
+        R({ t: 'qclaim', id: quest.id, state: 'unclaimed',
+            err: 'serwer nie potwierdził odbioru (brak claimedAt)' });
+        log('Claim przeszedł po HTTP, ale serwer nie potwierdził odbioru - NIE liczę tego questa.');
+        return false;
+      }
+
+      R({ t: 'qclaim', id: quest.id, state: 'claimed', verified: verified === true, status: r.status });
+      log(verified === true
+        ? 'Nagroda odebrana i potwierdzona przez serwer.'
+        : 'Nagroda zgłoszona (HTTP ' + r.status + '), ale nie udało się zweryfikować stanu u Discorda.');
+
+      const delay = Math.floor(8000 + Math.random() * 4000);
+      log('Czekam ' + Math.round(delay / 1000) + 's przed kolejnym zadaniem...');
+      await sleep(delay);
+      return { verified: verified === true };
+    } else {
+      R({ t: 'qclaim', id: quest.id, state: 'error', err: (r.status ? '[' + r.status + '] ' : '') + r.err });
+      log('Błąd odbioru: ' + (r.status ? '[' + r.status + '] ' : '') + r.err);
+      return false;
+    }
   };
+
+  // ── Pętla wykonawcza ──────────────────────────────────────────────────
+  for (const q of selected) {
+    let attempts = 0;
+    while (attempts < MAX_ATTEMPTS) {
+      attempts++;
+      let res;
+      try {
+        res = await doQuest(q);
+      } catch(e) {
+        // Wczesniej kazdy nieobsluzony wyjatek konczyl CALY skrypt bez zadnego raportu.
+        const msg = (e && e.message) || String(e);
+        R({ t: 'qerr', id: q.id, err: 'wyjątek: ' + msg });
+        log('Nieoczekiwany błąd przy ' + nameOf(q) + ': ' + msg);
+        res = { retry: attempts < MAX_ATTEMPTS, err: msg };
+      }
+      if (!res || !res.retry) break;
+      log('Retry ' + attempts + '/' + MAX_ATTEMPTS + ' for ' + nameOf(q) + ': ' + res.err);
+      await sleep(RETRY_PAUSE);
+    }
+  }
+
+  R({ t: 'finished', processed: selected.length });
+
+})();
+`;
