@@ -8,7 +8,7 @@ module.exports = `(async () => {
   // Wypisywana jako pierwsza linia logu: jesli w panelu widzisz stary numer,
   // proces node'a trzyma poprzedni inject.js w cache require() i trzeba go
   // zrestartowac (samo Stop/Start w UI nie przeladowuje tego pliku).
-  const VERSION = 'v2.1';
+  const VERSION = 'v2.2';
   // ─────────────────────────────────────────────────────────────────────────
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -24,6 +24,51 @@ module.exports = `(async () => {
       + ' | debug=' + (DEBUG ? 'on' : 'off'));
   dbg('URL: ' + location.href);
   dbg('UA: ' + navigator.userAgent);
+
+  // ── Podsluch naglowkow ────────────────────────────────────────────────────
+  // Klient Discorda dokleja do kazdego zadania zestaw naglowkow (autoryzacja,
+  // odcisk klienta, strefa czasowa). Goly fetch ich nie ma, wiec podgladamy je
+  // na prawdziwych zadaniach i doklejamy do wlasnych. Instalujemy to JAK
+  // NAJWCZESNIEJ, zanim zaczniemy cokolwiek wysylac.
+  const seenHeaders = {};
+  const WANTED = ['authorization', 'x-super-properties', 'x-discord-locale',
+                  'x-discord-timezone', 'x-debug-options'];
+
+  const noteHeader = (url, k, v) => {
+    try {
+      if (String(url || '').indexOf('/api/') === -1) return;
+      const key = String(k).toLowerCase();
+      if (WANTED.indexOf(key) !== -1 && v) seenHeaders[key] = String(v);
+    } catch(_) {}
+  };
+
+  try {
+    const xopen = XMLHttpRequest.prototype.open;
+    const xset = XMLHttpRequest.prototype.setRequestHeader;
+    XMLHttpRequest.prototype.open = function(m, u) {
+      try { this.__qUrl = u; } catch(_) {}
+      return xopen.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.setRequestHeader = function(k, v) {
+      noteHeader(this && this.__qUrl, k, v);
+      return xset.apply(this, arguments);
+    };
+  } catch(_) {}
+
+  try {
+    const origFetch = window.fetch;
+    window.fetch = function(input, init) {
+      try {
+        const url = typeof input === 'string' ? input : (input && input.url);
+        const h = (init && init.headers) || (input && input.headers);
+        if (h) {
+          if (typeof h.forEach === 'function') h.forEach((v, k) => noteHeader(url, k, v));
+          else for (const k of Object.keys(h)) noteHeader(url, k, h[k]);
+        }
+      } catch(_) {}
+      return origFetch.apply(this, arguments);
+    };
+  } catch(_) {}
 
   // ── 1. Webpack ────────────────────────────────────────────────────────────
   for (let i = 0; i < 120 && !window.webpackChunkdiscord_app; i++) await sleep(500);
@@ -232,16 +277,37 @@ module.exports = `(async () => {
   // Zapasowy POST z pominieciem modulu API Discorda - goly fetch nie da sie
   // zawiesic na modalu captchy, wiec zwraca PRAWDZIWY status i tresc bledu.
   const rawApiPost = async (path, body) => {
-    const token = readToken();
-    if (!token) throw new Error('brak tokenu do zapasowego requestu');
+    const headers = { 'content-type': 'application/json' };
+    for (const k of Object.keys(seenHeaders)) headers[k] = seenHeaders[k];
+    if (!headers.authorization) {
+      const token = readToken();
+      if (!token) throw new Error('brak tokenu i brak podsłuchanej autoryzacji');
+      headers.authorization = token;
+    }
+
+    dbg('→ RAW POST /api/v9' + path + ' nagłówki=' + Object.keys(headers).join(','));
+    const t0 = Date.now();
     const res = await fetch('/api/v9' + path, {
       method: 'POST',
-      headers: { 'authorization': token, 'content-type': 'application/json' },
+      headers: headers,
       body: JSON.stringify(body),
+      credentials: 'include',
     });
+
     let parsed = null;
-    try { parsed = await res.json(); } catch(_) {}
-    return { status: res.status, body: parsed, ok: res.status >= 200 && res.status < 300 };
+    let text = '';
+    try {
+      text = await res.text();
+      parsed = text ? JSON.parse(text) : null;
+    } catch(_) {}
+
+    // Pelna tresc odpowiedzi - to jedyne miejsce, gdzie widac prawdziwy powod
+    // odrzucenia (warstwa API klienta polyka to i zawiesza request).
+    dbg('← RAW ' + res.status + ' (' + (Date.now() - t0) + 'ms) '
+        + (text ? text.slice(0, 400) : '<puste ciało>'));
+
+    return { status: res.status, body: parsed, raw: text,
+             ok: res.status >= 200 && res.status < 300 };
   };
 
   // ── Odczyt stanu z ODPOWIEDZI SERWERA (nie z lokalnych liczników) ─────────
@@ -857,74 +923,62 @@ module.exports = `(async () => {
     // Pauza przed claimem - ukonczone questy inaczej strzelaja seria w tej samej sekundzie.
     await sleep(CD.beforeClaim + Math.random() * CD.jitter);
 
-    // Wlasciwa sciezka to /claim-reward (zwraca 204). '/claim' nie istnieje -> stad 404.
-    const paths = ['claim-reward'];
+    const path = '/quests/' + quest.id + '/claim-reward';
+    const body = { ...payloads[0] };
+    if (captchaKey) body.captcha_key = captchaKey;
 
-    let lastErr = null;
-    let sawNonNotFound = false;
-
-    for (const path of paths) {
-      for (const baseBody of payloads) {
-        try {
-          const body = { ...baseBody };
-          if (captchaKey) body.captcha_key = captchaKey;
-
-          const res = await apiCall('POST', '/quests/' + quest.id + '/' + path, body, 'claim', 60000);
-          return { ok: true, status: res.status, body: res.body, path: path };
-        } catch (e) {
-          lastErr = e;
-          const msg = errMsg(e);
-
-          if (/captcha|verif/i.test(String(msg)) || (e && e.status === 400 && e.body && e.body.captcha_key)) {
-            return { captcha: true };
-          }
-
-          // Timeout: modul API Discorda zawiesza request na modalu captchy.
-          // Sondujemy DOM i powtarzamy golym fetchem, ktory nie da sie zawiesic.
-          if (/^timeout /.test(String(msg))) {
-            const modal = captchaVisible();
-            log('Claim nie odpowiedział w zadanym czasie. Modal captchy w DOM: '
-                + (modal ? 'TAK' : 'nie') + '. Ponawiam z pominięciem warstwy API klienta...');
-            try {
-              const raw = await rawApiPost('/quests/' + quest.id + '/' + path, body);
-              log('Zapasowy claim: HTTP ' + raw.status
-                  + (raw.body && raw.body.message ? ' - ' + raw.body.message : ''));
-
-              if (raw.ok) return { ok: true, status: raw.status, body: raw.body, path: path };
-
-              if (raw.body && (raw.body.captcha_key || raw.body.captcha_sitekey
-                               || /captcha/i.test(String(raw.body.message || '')))) {
-                return { captcha: true, sitekey: raw.body.captcha_sitekey || null };
-              }
-
-              lastErr = { status: raw.status, body: raw.body,
-                          message: (raw.body && raw.body.message) || ('HTTP ' + raw.status) };
-              sawNonNotFound = raw.status !== 404;
-              break;
-            } catch (e2) {
-              log('Zapasowy claim też nie przeszedł: ' + ((e2 && e2.message) || e2)
-                  + (modal ? '' : ' - brak modalu captchy, więc to wygląda na problem sieci/proxy.'));
-              break;
-            }
-          }
-
-          // 404 = ten endpoint nie istnieje LUB quest nie jest zapisany.
-          // To NIE jest odebrana nagroda - idziemy do kolejnej ścieżki.
-          if (e && e.status === 404) break;
-
-          sawNonNotFound = true;
-          // 400/403 moga oznaczac zly ksztalt payloadu - probujemy kolejny wariant.
-          if (e && (e.status === 400 || e.status === 403)) continue;
-          break;
-        }
-      }
+    // GOLY FETCH JAKO SCIEZKA GLOWNA.
+    // Warstwa API klienta Discorda przechwytuje odpowiedz z wyzwaniem captcha:
+    // zamiast odrzucic obietnice, zawiesza ja i czeka na rozwiazanie modala,
+    // ktorego w trybie headless nikt nie rozwiaze. Na drucie widac wtedy 400,
+    // a skrypt siedzi do wlasnego timeoutu. Goly fetch nie da sie zawiesic.
+    let raw = null;
+    try {
+      raw = await _serialize(async () => {
+        await _waitTurn(true);
+        return rawApiPost(path, body);
+      });
+    } catch (e) {
+      log('Zapasowy claim nie wystartował (' + ((e && e.message) || e)
+          + ') - wracam do modułu API klienta.');
     }
 
-    return {
-      ok: false,
-      err: errMsg(lastErr) + (sawNonNotFound ? '' : ' (404 na /claim-reward - quest nieznany lub brak zapisu?)'),
-      status: lastErr ? lastErr.status : null,
-    };
+    if (raw) {
+      if (raw.ok) return { ok: true, status: raw.status, body: raw.body };
+
+      const b = raw.body || {};
+      const looksLikeCaptcha = !!(b.captcha_key || b.captcha_sitekey || b.captcha_service
+                                  || /captcha/i.test(String(b.message || raw.raw || '')));
+      if (looksLikeCaptcha) {
+        log('Claim wymaga CAPTCHA (HTTP ' + raw.status + ', usługa: '
+            + (b.captcha_service || '?') + ', sitekey: ' + (b.captcha_sitekey || '?') + ')');
+        return { captcha: true, sitekey: b.captcha_sitekey || null,
+                 service: b.captcha_service || null, rqdata: b.captcha_rqdata || null };
+      }
+
+      return {
+        ok: false,
+        status: raw.status,
+        err: (b.message || ('HTTP ' + raw.status)) + formErrors({ body: b }),
+      };
+    }
+
+    // Sciezka zapasowa: modul API klienta (moze zawisnac - stad krotszy timeout).
+    try {
+      const res = await apiCall('POST', path, body, 'claim', 45000);
+      return { ok: true, status: res.status, body: res.body };
+    } catch (e) {
+      const msg = errMsg(e);
+      if (/captcha|verif/i.test(String(msg))
+          || (e && e.status === 400 && e.body && e.body.captcha_key)) {
+        return { captcha: true };
+      }
+      if (/^timeout /.test(String(msg))) {
+        log('Moduł API klienta zawiesił claim (modal captchy w DOM: '
+            + (captchaVisible() ? 'TAK' : 'nie') + ')');
+      }
+      return { ok: false, err: msg, status: e ? e.status : null };
+    }
   };
 
   // Potwierdzenie u zrodla: czy quest ma faktycznie ustawione claimedAt?
