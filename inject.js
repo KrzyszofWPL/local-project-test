@@ -367,14 +367,12 @@ module.exports = `(async () => {
   // jest nieodroznialne od: solver nigdy nie zostal wywolany, CSP zablokowalo
   // polaczenie, albo serwer nie stoi. Robimy to RAZ, na starcie.
   (async () => {
-    const url = 'http://127.0.0.1:5000/analyze-captcha';
+    // GET na /openapi.json: FastAPI serwuje to zawsze, nie dotyka modelu i nie
+    // przechodzi przez walidacje Pydantic (POST bez image_data dalby mylace 422).
+    const url = 'http://127.0.0.1:5000/openapi.json';
     try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ping: true }),
-      });
-      log('[GPU-AI] Solver odpowiada: HTTP ' + res.status + ' (' + url + ')');
+      const res = await fetch(url, { method: 'GET' });
+      log('[GPU-AI] Solver osiągalny: HTTP ' + res.status + ' (' + url + ')');
     } catch (e) {
       const m = String((e && e.message) || e);
       log('[GPU-AI] Solver NIEOSIĄGALNY: ' + m
