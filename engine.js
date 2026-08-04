@@ -9,6 +9,7 @@ const {
   playwrightProxy, detectScheme, lastErrorFor, closeAll: closeBridges,
 } = require('./socks-bridge.js');
 const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
+const { solveCaptcha } = require('./captcha.js');
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -19,7 +20,7 @@ const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?fo
 // Wersja silnika. Podnies razem z VERSION w inject.js przy kazdej zmianie -
 // obie sa wypisywane do logu konta, wiec od razu widac, czy panel zostal
 // zrestartowany, czy wciaz chodzi na starym kodzie z cache require().
-const ENGINE_VERSION = 'v2.2';
+const ENGINE_VERSION = 'v2.3';
 
 // Debug jest gadatliwy, wiec trzymamy wiecej historii i pokazujemy jej wiecej,
 // zeby szczegolowe linie nie wypychaly z panelu tych istotnych.
@@ -851,6 +852,17 @@ class Engine extends EventEmitter {
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       await page.evaluate(cd => { window.__questCooldowns = cd; }, this.cooldowns);
       await page.evaluate(d => { window.__questDebug = d; }, QUEST_DEBUG);
+
+      // Mostek captchy musi zyc po stronie Playwrighta: ramka hCaptcha jest
+      // cross-origin, wiec wstrzykniety JS jej nie dosiegnie, a Playwright tak.
+      await page.exposeFunction('__questSolveCaptcha', async (challenge) => {
+        try {
+          return await solveCaptcha(context, challenge, m => this._log(acc, m));
+        } catch (e) {
+          this._log(acc, '[GPU-AI] Mostek captchy zawiódł: ' + shortError(e));
+          return null;
+        }
+      });
 
       // Bledy ze strony trafialy dotad w prozne - konsola przegladarki jest
       // niewidoczna w trybie headless, wiec przepinamy ja do logu konta.

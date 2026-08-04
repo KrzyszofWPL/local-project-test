@@ -8,7 +8,7 @@ module.exports = `(async () => {
   // Wypisywana jako pierwsza linia logu: jesli w panelu widzisz stary numer,
   // proces node'a trzyma poprzedni inject.js w cache require() i trzeba go
   // zrestartowac (samo Stop/Start w UI nie przeladowuje tego pliku).
-  const VERSION = 'v2.2';
+  const VERSION = 'v2.3';
   // ─────────────────────────────────────────────────────────────────────────
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -822,92 +822,12 @@ module.exports = `(async () => {
   // ── Auto-solve AI via local GPU ──────────────────────────────────────
   const LOCAL_AI_ENDPOINT = 'http://127.0.0.1:5000/analyze-captcha';
 
-  const solveCaptchaVisualOnGPU = async () => {
-    log('[GPU-AI] Poszukiwanie aktywnej ramki hCaptcha na ekranie...');
-    
-    const iframe = document.querySelector('iframe[src*="hcaptcha.com/modules/"]');
-    if (!iframe) {
-      log('[GPU-AI] Nie znaleziono ramki z obrazkami hCaptcha.');
-      return null;
-    }
+  // Dawny solver dzialajacy w kontekscie strony zostal usuniety: czytal ramke
+  // hCaptcha przez iframe.contentWindow.document, co dla cross-origin zawsze
+  // konczylo sie SecurityError. Zastapil go mostek w captcha.js, wolany przez
+  // window.__questSolveCaptcha wystawione z Playwrighta.
 
-    // Ramka hCaptcha jest cross-origin - dostep do jej DOM rzuca SecurityError.
-    // Bez try/catch wyjatek wychodzil poza IIFE i cicho ubijal caly skrypt.
-    let doc;
-    try {
-      doc = iframe.contentWindow.document;
-      if (!doc) throw new Error('brak dostepu do dokumentu ramki');
-    } catch(e) {
-      log('[GPU-AI] Brak dostępu do ramki hCaptcha (cross-origin): ' + ((e && e.message) || e)
-          + ' - CAPTCHA wymaga ręcznego rozwiązania.');
-      return null;
-    }
-
-    const promptEl = doc.querySelector('.prompt-text');
-    const imgEl = doc.querySelector('.challenge-view img, .challenge-container img');
-
-    if (!promptEl || !imgEl) return null;
-
-    const targetText = promptEl.innerText;
-    log('[GPU-AI] Zadanie: "' + targetText + '"');
-
-    const canvas = document.createElement('canvas');
-    canvas.width = imgEl.naturalWidth || imgEl.width;
-    canvas.height = imgEl.naturalHeight || imgEl.height;
-    const ctx = canvas.getContext('2d');
-    ctx.drawImage(imgEl, 0, 0);
-    const base64Image = canvas.toDataURL('image/png');
-
-    log('[GPU-AI] Przesyłanie obrazu do analizy przez GPU...');
-    const res = await fetch(LOCAL_AI_ENDPOINT, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        image_data: base64Image,
-        target_object: targetText,
-        grid: "3x3"
-      })
-    });
-
-    const data = await res.json();
-    if (!data.success || !data.click_indices) return null;
-
-    log('[GPU-AI] GPU wytypowało kafelki: ' + data.click_indices);
-
-    const tiles = doc.querySelectorAll('.task-image, .tile');
-    for (const index of data.click_indices) {
-      if (tiles[index]) {
-        await sleep(300 + Math.random() * 200);
-        tiles[index].click();
-      }
-    }
-
-    await sleep(500);
-    const verifyBtn = doc.querySelector('.button-submit, .verify-button');
-    if (verifyBtn) verifyBtn.click();
-
-    return await waitForRealToken();
-  };
-
-  const waitForRealToken = () => {
-    return new Promise((resolve) => {
-      let attempts = 0;
-      const check = setInterval(() => {
-        attempts++;
-        const tokenEl = document.querySelector('[name="h-captcha-response"]');
-        if (tokenEl && tokenEl.value && tokenEl.value.length > 30) {
-          clearInterval(check);
-          resolve(tokenEl.value);
-        }
-        if (attempts > 30) {
-          clearInterval(check);
-          resolve(null);
-        }
-      }, 500);
-    });
-  };
-
-  const attemptClaim = async (quest, captchaKey = null) => {
+  const attemptClaim = async (quest, captchaKey = null, rqtoken = null) => {
     const sealed = sealedFor(quest.id);
 
     // Dokladny ksztalt body prawdziwego klienta. Wszystkie piec pol jest
@@ -925,7 +845,10 @@ module.exports = `(async () => {
 
     const path = '/quests/' + quest.id + '/claim-reward';
     const body = { ...payloads[0] };
+    // Discord wiaze rozwiazanie z konkretnym wyzwaniem: sam token nie wystarczy,
+    // trzeba odeslac takze rqtoken z odpowiedzi, ktora to wyzwanie wystawila.
     if (captchaKey) body.captcha_key = captchaKey;
+    if (rqtoken) body.captcha_rqtoken = rqtoken;
 
     // GOLY FETCH JAKO SCIEZKA GLOWNA.
     // Warstwa API klienta Discorda przechwytuje odpowiedz z wyzwaniem captcha:
@@ -953,7 +876,9 @@ module.exports = `(async () => {
         log('Claim wymaga CAPTCHA (HTTP ' + raw.status + ', usługa: '
             + (b.captcha_service || '?') + ', sitekey: ' + (b.captcha_sitekey || '?') + ')');
         return { captcha: true, sitekey: b.captcha_sitekey || null,
-                 service: b.captcha_service || null, rqdata: b.captcha_rqdata || null };
+                 service: b.captcha_service || null, rqdata: b.captcha_rqdata || null,
+                 rqtoken: b.captcha_rqtoken || null,
+                 sessionId: b.captcha_session_id || null };
       }
 
       return {
@@ -1006,23 +931,33 @@ module.exports = `(async () => {
 
     if (r.captcha) {
       R({ t: 'qclaim', id: quest.id, state: 'captcha' });
-      log('[GPU-AI] Napotkano CAPTCHA. Przekazuję do serwera Python...');
 
+      // Rozwiazywanie idzie do Playwrighta - ramka hCaptcha jest cross-origin,
+      // wiec z tego kontekstu nie da sie jej ani odczytac, ani kliknac.
       let realCaptchaKey = null;
-      try {
-        realCaptchaKey = await solveCaptchaVisualOnGPU();
-      } catch(e) {
-        log('[GPU-AI] Solver zwrócił błąd: ' + ((e && e.message) || e));
+      if (typeof window.__questSolveCaptcha === 'function') {
+        log('[GPU-AI] CAPTCHA - przekazuję do mostka Playwrighta...');
+        try {
+          realCaptchaKey = await window.__questSolveCaptcha({
+            sitekey: r.sitekey || null,
+            rqdata: r.rqdata || null,
+            service: r.service || null,
+          });
+        } catch(e) {
+          log('[GPU-AI] Mostek zwrócił błąd: ' + ((e && e.message) || e));
+        }
+      } else {
+        log('[GPU-AI] Mostek captchy niedostępny (stary engine?) - pomijam.');
       }
 
       if (!realCaptchaKey) {
-        log('[GPU-AI] Brak tokenu z solvera GPU.');
+        log('[GPU-AI] Brak tokenu - nagroda zostaje nieodebrana.');
         R({ t: 'qclaim', id: quest.id, state: 'unclaimed' });
         return false;
       }
 
-      log('[GPU-AI] Token odebrany, ponawiam claim...');
-      r = await attemptClaim(quest, realCaptchaKey);
+      log('[GPU-AI] Token uzyskany, ponawiam claim...');
+      r = await attemptClaim(quest, realCaptchaKey, r.rqtoken || null);
     }
 
     if (r.ok) {
