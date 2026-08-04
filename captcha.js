@@ -143,10 +143,17 @@ async function askSolver(payload, log) {
     return null;
   }
 
-  const data = await res.json().catch(() => null);
+  // Czytamy tekstem, nie od razu JSON-em: przy niezlapanym wyjatku FastAPI
+  // odsyla goly "Internal Server Error", ktory po res.json() gubil sie jako "?"
+  // i zostawial nas bez powodu awarii.
+  const raw = await res.text().catch(() => '');
+  let data = null;
+  try { data = raw ? JSON.parse(raw) : null; } catch (_) {}
+
   if (!res.ok) {
+    const why = (data && (data.detail || data.reason)) || raw.slice(0, 300) || '(puste ciało)';
     log(`[GPU-AI] Solver zwrócił HTTP ${res.status}: `
-      + (data && data.detail ? JSON.stringify(data.detail).slice(0, 200) : '?'));
+      + (typeof why === 'string' ? why : JSON.stringify(why).slice(0, 300)));
     return null;
   }
   if (!data || !data.success) {
