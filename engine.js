@@ -577,9 +577,14 @@ class Engine extends EventEmitter {
     const fp = acc.fingerprint || fingerprintFor(acc.token);
     fs.mkdirSync(profileDir, { recursive: true });
 
+    // Loopback musi omijac proxy: lokalny solver stoi na 127.0.0.1:5000, a
+    // SOCKS5 idzie przez mostek tez na loopbacku. Bez bypassu zapytanie do
+    // solvera poszloby do zdalnego proxy i szukalo go na CUDZYM localhoscie.
+    const pwProxy = await playwrightProxy(proxy);
+
     return chromium.launchPersistentContext(path.join(profileDir, 'browser'), {
       headless: this.headless,
-      proxy: await playwrightProxy(proxy),
+      proxy: pwProxy ? { ...pwProxy, bypass: '127.0.0.1,localhost,::1' } : undefined,
       userAgent: this.desktopMode ? ELECTRON_UA : fp.userAgent,
       locale: fp.locale,
       timezoneId: fp.timezoneId,
