@@ -76,6 +76,17 @@ function pageHtml(sitekey, rqdata) {
 const TILE_SELECTORS = '.task-image, .image-wrapper, [class*="task-image"], [class*="challenge"] .image';
 const PROMPT_SELECTORS = '.prompt-text, [class*="prompt-text"], .challenge-prompt';
 
+// Obszar samego zadania - kolejnosc MA znaczenie, od najwezszego do najszerszego.
+// Nie wolno tego zwinac do jednego selektora z przecinkami: Playwright zwraca
+// wtedy trafienia w kolejnosci dokumentu, a `body` jest przodkiem wszystkiego
+// pozostalego, wiec `.first()` zawsze wybieralby cale cialo ramki. Model
+// dostawal przez to zrzut z trescia polecenia i przyciskami zamiast samego
+// zadania i "uziemial sie" na elementach interfejsu.
+const AREA_SELECTORS = [
+  '.challenge-interface', '.challenge-view', '.challenge-container',
+  '.challenge', 'body',
+];
+
 async function challengeFrame(page) {
   const frames = page.frames().filter(f => (f.url() || '').indexOf('hcaptcha.com') !== -1);
   // Najpierw ramka, ktora naprawde ma kafelki - niezaleznie od ksztaltu URL-a.
@@ -88,6 +99,22 @@ async function challengeFrame(page) {
   for (const frame of frames) {
     try {
       if (await frame.locator(PROMPT_SELECTORS).first().count()) return frame;
+    } catch (_) {}
+  }
+  return null;
+}
+
+// Najwezszy sensowny element obejmujacy samo zadanie. Zwraca lokator, zeby
+// wolajacy mogl zrobic zrzut i DOPIERO POTEM zmierzyc prostokat: `screenshot()`
+// przewija element do widoku, wiec prostokat pobrany wczesniej moze byc
+// nieaktualny, a na nim opiera sie przeliczenie wspolrzednych przeciagniecia.
+async function challengeArea(frame) {
+  for (const sel of AREA_SELECTORS) {
+    const loc = frame.locator(sel).first();
+    try {
+      if (!(await loc.count())) continue;
+      const box = await loc.boundingBox();
+      if (box && box.width > 1 && box.height > 1) return { loc, sel };
     } catch (_) {}
   }
   return null;
@@ -179,7 +206,14 @@ async function askSolver(payload, log) {
 // 0..1 wzgledem przeslanego zrzutu, wiec przeliczamy je na piksele strony
 // przez prostokat elementu, ktory zrzucalismy.
 async function performDrag(page, box, from, to, log) {
-  const px = (pt) => ({ x: box.x + pt[0] * box.width, y: box.y + pt[1] * box.height });
+  // Model potrafi zwrocic wartosc spoza 0..1 (ramka wystajaca poza obrazek).
+  // Bez przyciecia kursor wyjezdza poza obszar zadania, hCaptcha gubi wskaznik
+  // w trakcie gestu i wyzwanie konczy sie bledem zamiast zla odpowiedzia.
+  const clamp01 = (v) => Math.max(0, Math.min(1, Number(v) || 0));
+  const px = (pt) => ({
+    x: box.x + clamp01(pt[0]) * box.width,
+    y: box.y + clamp01(pt[1]) * box.height,
+  });
   const a = px(from);
   const b = px(to);
   log(`[GPU-AI] Przeciągam (${Math.round(a.x)},${Math.round(a.y)})`
@@ -237,7 +271,8 @@ async function reroll(frame, log) {
 
 // Jedna runda wyzwania: przeczytaj polecenie, zrzuc kafelki, zapytaj solver,
 // klikaj, zatwierdz. Zwraca kod statusu opisujacy, co sie stalo.
-async function playRound(frame, log, page) {
+async function playRound(frame, log, page, opts) {
+  const allowPositional = !!(opts && opts.allowPositional);
   let prompt = '';
   try {
     prompt = (await frame.locator(PROMPT_SELECTORS).first().innerText({ timeout: 8000 })).trim();
@@ -261,16 +296,32 @@ async function playRound(frame, log, page) {
       return 'brak-kafelkow';
     }
 
-    const area = frame.locator('.challenge-view, .challenge-container, body').first();
-    let box = null;
-    try { box = await area.boundingBox(); } catch (_) {}
-    if (!box) {
+    // Zadania pozycyjne to najslabsza strona solvera - grounding wskazuje
+    // obiekty, a tu trzeba trafic w konkretne miejsce (czesto w PUSTE miejsce,
+    // ktorego detektor z definicji nie znajdzie). Dopoki zostaly przelosowania,
+    // taniej jest wylosowac siatke obrazkow niz strzelac.
+    if (!allowPositional) {
+      log(`[GPU-AI] Zadanie pozycyjne [${kind}] - wolę wylosować siatkę obrazków.`);
+      return 'pozycyjne';
+    }
+
+    const area = await challengeArea(frame);
+    if (!area) {
       log('[GPU-AI] Nie udało się zmierzyć obszaru wyzwania.');
       if (page) await dumpState(page, log, 'brak-obszaru');
       return 'brak-kafelkow';
     }
 
-    const shot = await area.screenshot({ timeout: 10000 });
+    // Zrzut PRZED pomiarem: screenshot() przewija element do widoku, wiec
+    // prostokat musi pochodzic z tego samego stanu strony co obrazek.
+    const shot = await area.loc.screenshot({ timeout: 10000 });
+    const box = await area.loc.boundingBox();
+    if (!box) {
+      log('[GPU-AI] Obszar wyzwania zniknął po zrzucie.');
+      return 'brak-kafelkow';
+    }
+    log(`[GPU-AI] Obszar zadania: ${area.sel} ${Math.round(box.width)}×${Math.round(box.height)}`);
+
     const answer = await askSolver({
       prompt: prompt,
       kind: kind,
@@ -283,6 +334,16 @@ async function playRound(frame, log, page) {
       if (answer.confidence === 'low') {
         log('[GPU-AI] Uwaga: model zgłasza NISKĄ pewność dla zadania pozycyjnego.');
       }
+
+      // Zerowy albo mikroskopijny wektor to nie jest odpowiedz - to znak, ze
+      // grounding zwrocil dwa razy ten sam obszar (zwykle caly obrazek).
+      const dist = Math.hypot(answer.to[0] - answer.from[0], answer.to[1] - answer.from[1]);
+      if (!(dist > 0.02)) {
+        log(`[GPU-AI] Odrzucam odpowiedź: wektor przeciągnięcia ~0 (${dist.toFixed(3)})`
+          + ' - model wskazał dwa razy to samo miejsce.');
+        return 'solver-odmowil';
+      }
+
       await performDrag(page, box, answer.from, answer.to, log);
     } else {
       log(`[GPU-AI] Solver nie zwrócił wykonalnej akcji (${answer.action || '?'}).`);
@@ -380,6 +441,10 @@ async function solveCaptcha(context, challenge, log) {
       const err = await page.evaluate(() => window.__capError);
       if (err) {
         log(`[GPU-AI] hCaptcha zgłosiła błąd: ${err}`);
+        // Bliźniacza gałąź w pętli oczekiwania nizej zrzucala stan, a ta nie -
+        // czyli akurat najczestsza sciezka bledu (odrzucenie odpowiedzi po
+        // zatwierdzeniu rundy) nie zostawiala po sobie ZADNEGO sladu.
+        await dumpState(page, log, 'challenge-error');
         return null;
       }
 
@@ -412,13 +477,25 @@ async function solveCaptcha(context, challenge, log) {
       }
 
       log(`[GPU-AI] Runda ${round}/${MAX_ROUNDS}`);
-      const status = await playRound(frame, log, page);
+      // Gdy przelosowania sie skoncza, przestajemy wybrzydzac i probujemy
+      // rozwiazac to, co dostalismy - lepsza slaba proba niz zadna.
+      const status = await playRound(frame, log, page,
+        { allowPositional: rerolls >= MAX_REROLLS });
 
-      if (status === 'brak-kafelkow' && rerolls < MAX_REROLLS) {
+      if ((status === 'brak-kafelkow' || status === 'pozycyjne') && rerolls < MAX_REROLLS) {
         rerolls++;
         log(`[GPU-AI] Losuję inne wyzwanie (${rerolls}/${MAX_REROLLS})...`);
+        // Przelosowanie NIE jest rozwiazana runda - bez cofniecia licznika
+        // trzy proby wylosowania siatki zjadaly caly budzet MAX_ROUNDS i na
+        // faktyczne rozwiazywanie nie zostawalo nic. Petla i tak sie konczy,
+        // bo `rerolls` jest ograniczone.
+        round--;
         if (await reroll(frame, log)) continue;
-        return null;
+        // Bez przycisku losowania nie ma po co isc dalej z tym samym zadaniem -
+        // ale przy zadaniu pozycyjnym sprobujmy je chociaz rozwiazac.
+        if (status !== 'pozycyjne') return null;
+        rerolls = MAX_REROLLS;
+        continue;
       }
 
       if (status !== 'zatwierdzone') {
