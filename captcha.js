@@ -109,6 +109,14 @@ async function dumpState(page, log, tag) {
         img: document.querySelectorAll('img').length,
         iframe: document.querySelectorAll('iframe').length,
         txt: (document.body ? document.body.innerText : '').slice(0, 60).replace(/\s+/g, ' '),
+        // Nazwy klas elementow, ktore WYGLADAJA na klikalne kafelki: obrazki
+        // albo divy z tlem graficznym. Bez tego zgadujemy selektory w ciemno.
+        klasy: Array.from(new Set(Array.from(
+          document.querySelectorAll('img, [style*="background-image"], [class*="image"], [class*="tile"], [class*="answer"]')
+        ).map(function (el) {
+          return (el.className && el.className.baseVal !== undefined
+            ? el.className.baseVal : String(el.className || '')).trim();
+        }).filter(Boolean))).slice(0, 12),
       })));
     } catch (e) {
       info = 'evaluate: ' + String((e && e.message) || e).slice(0, 60);
@@ -197,8 +205,13 @@ async function performDrag(page, box, from, to, log) {
 function classifyChallenge(prompt) {
   const p = String(prompt || '').toLowerCase();
   if (/\bdrag\b|przeciągnij|przeciagnij|\bslide\b|\bmove the\b/.test(p)) return 'drag';
-  if (/\brotate\b|obróć|obroc/.test(p)) return 'rotate';
-  if (/click each image|select all|zaznacz|kliknij.*obraz|containing a/.test(p)) return 'grid';
+  if (/\brotate\b|obróć|obroc|\bturn the\b/.test(p)) return 'rotate';
+  // Obejmuje takze wyzwania "semantyczne" ("wybierz zwierze, ktore wykluwa sie
+  // z jajka") - to nadal wybor obrazka, tylko polecenie opisuje go pojęciem,
+  // a nie nazwa. Wczesniej wpadaly w 'nieznany' i solver je odrzucal.
+  if (/click each image|select all|containing a|zaznacz|kliknij|wybierz|\bselect the\b|\bchoose\b|\bwhich of\b/.test(p)) {
+    return 'grid';
+  }
   return 'nieznany';
 }
 
