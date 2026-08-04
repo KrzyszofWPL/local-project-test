@@ -401,6 +401,13 @@ async function main() {
 
   const browser = await chromium.launch({
     headless: true,
+    // Nowy tryb headless (pelna przegladarka). Domyslny
+    // chromium-headless-shell nie kompozytuje ramek cross-origin, przez co
+    // wyzwania hCaptcha zrzucaja sie jako puste tlo. Patrz komentarz przy
+    // _openProfile w engine.js.
+    channel: process.env.CHROMIUM_CHANNEL !== undefined
+      ? (process.env.CHROMIUM_CHANNEL || undefined)
+      : 'chromium',
     proxy: proxyList.length ? { server: 'http://per-context' } : undefined,
     args: [
       '--no-sandbox',

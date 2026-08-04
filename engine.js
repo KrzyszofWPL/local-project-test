@@ -32,6 +32,13 @@ const QUEST_DEBUG = process.env.QUEST_DEBUG !== 'false';
 // konta. Cztery rundy wyzwania z inferencja na GPU potrafia zajac ~2 minuty.
 const CAPTCHA_DRAIN_MS = parseInt(process.env.CAPTCHA_DRAIN_MS || '150000', 10);
 
+// Kanal Chromium. 'chromium' wymusza nowy tryb headless (pelna przegladarka)
+// zamiast domyslnego chromium-headless-shell, ktory nie renderuje ramek
+// cross-origin. Ustaw CHROMIUM_CHANNEL='' , zeby wrocic do domyslnego builda.
+const CHROMIUM_CHANNEL = process.env.CHROMIUM_CHANNEL !== undefined
+  ? process.env.CHROMIUM_CHANNEL
+  : 'chromium';
+
 // Keep WebRTC from punching UDP straight out of the box and revealing the real
 // IP while every HTTP request goes through the proxy. Only applied to proxied
 // browsers – without a proxy there is nothing to leak past.
@@ -600,7 +607,7 @@ class Engine extends EventEmitter {
     // solvera poszloby do zdalnego proxy i szukalo go na CUDZYM localhoscie.
     const pwProxy = await playwrightProxy(proxy);
 
-    return chromium.launchPersistentContext(path.join(profileDir, 'browser'), {
+    const opts = {
       headless: this.headless,
       proxy: pwProxy ? { ...pwProxy, bypass: '127.0.0.1,localhost,::1' } : undefined,
       userAgent: this.desktopMode ? ELECTRON_UA : fp.userAgent,
@@ -618,7 +625,34 @@ class Engine extends EventEmitter {
         '--disable-renderer-backgrounding',
         ...(proxy ? WEBRTC_ARGS : []),
       ],
-    });
+    };
+
+    const dir = path.join(profileDir, 'browser');
+
+    // Playwright od wersji 1.49 uruchamia tryb headless na osobnym budynku
+    // "chromium-headless-shell", ktory - zgodnie z dokumentacja - odwzorowuje
+    // STARY headless. To okrojony build na module //content, bez pelnej
+    // warstwy przegladarki, ktory NIE kompozytuje poprawnie ramek
+    // cross-origin (OOPIF). Ramka wyzwania hCaptcha jest wlasnie taka, wiec
+    // jej zawartosc nie trafia do zrzutu: DOM i layout sa kompletne, ale
+    // pikseli nie ma. Objawialo sie to jednolicie szarymi zrzutami,
+    // raportami "element is not visible" i modelem uziemiajacym sie na
+    // pustym tle. channel: 'chromium' przelacza na nowy headless, czyli
+    // pelna przegladarke, ktora renderuje te ramki normalnie. Przy okazji
+    // jest znacznie trudniejszy do wykrycia niz headless shell.
+    if (CHROMIUM_CHANNEL) {
+      try {
+        return await chromium.launchPersistentContext(dir, {
+          ...opts, channel: CHROMIUM_CHANNEL,
+        });
+      } catch (e) {
+        this._log(acc, `Kanał '${CHROMIUM_CHANNEL}' niedostępny (${shortError(e)})`
+          + ' – wracam do domyślnego builda. Uwaga: w trybie headless ramki'
+          + ' cross-origin mogą nie być renderowane.');
+      }
+    }
+
+    return chromium.launchPersistentContext(dir, opts);
   }
 
   // Write the raw token into localStorage so Discord logs in with it. Used only
