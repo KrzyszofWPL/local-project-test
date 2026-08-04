@@ -107,6 +107,17 @@ class Engine extends EventEmitter {
     this.accounts = [];
     this._browsers = { plain: null, proxied: null };
     this.concurrency = parseInt(process.env.CONCURRENCY || '5', 10);
+    // Odstep miedzy startami kolejnych kont. Bez niego caly worker pool rusza
+    // w tej samej sekundzie i wszystkie konta uderzaja w Discorda naraz.
+    this.startStagger = parseInt(process.env.START_STAGGER || '15000', 10);
+    // Cooldowny przekazywane do wstrzykiwanego skryptu (ms).
+    this.cooldowns = {
+      minGap: parseInt(process.env.CD_MIN_GAP || '1500', 10),
+      jitter: parseInt(process.env.CD_JITTER || '1200', 10),
+      beforeClaim: parseInt(process.env.CD_BEFORE_CLAIM || '4000', 10),
+      betweenQuests: parseInt(process.env.CD_BETWEEN_QUESTS || '9000', 10),
+      afterRateLimit: parseInt(process.env.CD_AFTER_RATE_LIMIT || '2000', 10),
+    };
     this.headless = process.env.HEADLESS !== 'false';
     this.desktopMode = process.env.DESKTOP_MODE === 'true';
     this.onlyOrbs = process.env.ONLY_ORBS !== 'false';
@@ -650,16 +661,25 @@ class Engine extends EventEmitter {
     const queue = this.accounts.filter(a =>
       !a._running && !['running', 'starting', 'done'].includes(a.status));
     let idx = 0;
-    const worker = async () => {
+    const worker = async (slot) => {
+      // Rozjezdzamy start kazdego workera, zeby konta nie logowaly sie rownolegle.
+      if (slot > 0 && this.startStagger > 0) {
+        await new Promise(r => setTimeout(r, slot * this.startStagger));
+      }
       while (idx < queue.length) {
         const acc = queue[idx++];
         this._push(acc, { status: 'starting', message: '', needsCaptcha: false, quests: [] });
         try { await this._run(acc); }
         catch (e) { this._push(acc, { status: 'error', message: e.message }); }
+
+        // Cooldown przed wzieciem kolejnego konta z kolejki.
+        if (idx < queue.length && this.startStagger > 0) {
+          await new Promise(r => setTimeout(r, this.startStagger));
+        }
       }
     };
     const workers = Array.from(
-      { length: Math.min(this.concurrency, queue.length) }, worker
+      { length: Math.min(this.concurrency, queue.length) }, (_, slot) => worker(slot)
     );
     await Promise.all(workers);
   }
@@ -806,6 +826,7 @@ class Engine extends EventEmitter {
 
       this._push(acc, { message: 'Looking for quests…' });
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
+      await page.evaluate(cd => { window.__questCooldowns = cd; }, this.cooldowns);
       const result = await page.evaluate(INJECT_SCRIPT);
 
       if (result?.fatal) {

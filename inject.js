@@ -45,7 +45,31 @@ module.exports = `(async () => {
     new Promise((_, rej) => setTimeout(() => rej(new Error('timeout ' + (ms/1000) + 's: ' + label)), ms)),
   ]);
 
-  const errMsg = e => (e && e.body && e.body.message) || (e && e.message) || ('HTTP ' + (e && e.status));
+  // Discord przy 400 (50035 Invalid Form Body) podaje w body.errors DOKLADNIE
+  // to pole, ktore mu sie nie podoba. Bez tego widac tylko "Nieprawidlowa tresc
+  // formularza" i nie da sie zgadnac, czego brakuje.
+  const formErrors = (e) => {
+    const errs = e && e.body && e.body.errors;
+    if (!errs || typeof errs !== 'object') return '';
+    const out = [];
+    const walk = (node, pathStr) => {
+      if (!node || typeof node !== 'object' || out.length >= 6) return;
+      if (Array.isArray(node._errors)) {
+        for (const x of node._errors) {
+          out.push(pathStr + ': ' + ((x && (x.message || x.code)) || 'błąd'));
+        }
+        return;
+      }
+      for (const k of Object.keys(node)) {
+        walk(node[k], pathStr ? pathStr + '.' + k : k);
+      }
+    };
+    walk(errs, '');
+    return out.length ? ' {' + out.join('; ') + '}' : '';
+  };
+
+  const errMsg = e => ((e && e.body && e.body.message) || (e && e.message)
+    || ('HTTP ' + (e && e.status))) + formErrors(e);
 
   const isRateLimit = (e) => {
     if (!e) return false;
@@ -58,17 +82,58 @@ module.exports = `(async () => {
     return typeof ra === 'number' ? Math.ceil(ra * 1000) + 500 : 6000;
   };
 
-  const apiCall = async (method, url, body, label) => {
+  // ── Cooldowny ─────────────────────────────────────────────────────────────
+  // Wszystkie zapisy ida przez JEDNA kolejke: nigdy dwa rownolegle requesty
+  // i zawsze odstep miedzy nimi. Bez tego 13 questow wali w /claim-reward
+  // w tej samej sekundzie i Discord odbija to rate limitem.
+  const COOLDOWN = (window.__questCooldowns || {});
+  const CD = {
+    minGap:      COOLDOWN.minGap      != null ? COOLDOWN.minGap      : 1500,  // min. odstep miedzy zapisami
+    jitter:      COOLDOWN.jitter      != null ? COOLDOWN.jitter      : 1200,  // losowy dodatek do odstepu
+    beforeClaim: COOLDOWN.beforeClaim != null ? COOLDOWN.beforeClaim : 4000,  // pauza przed kazdym claimem
+    betweenQuests: COOLDOWN.betweenQuests != null ? COOLDOWN.betweenQuests : 9000,
+    afterRateLimit: COOLDOWN.afterRateLimit != null ? COOLDOWN.afterRateLimit : 2000,
+  };
+
+  let _chain = Promise.resolve();
+  let _lastWrite = 0;
+  let _penalty = 0;   // rosnie po kazdym 429, schodzi po udanym requescie
+
+  // Serializacja: kolejne wywolania ustawiaja sie w ogonku jednego lancucha.
+  const _serialize = (fn) => {
+    const run = _chain.then(fn, fn);
+    _chain = run.then(() => {}, () => {});
+    return run;
+  };
+
+  const _waitTurn = async (isWrite) => {
+    if (!isWrite) return;
+    const gap = CD.minGap + Math.random() * CD.jitter + _penalty;
+    const since = Date.now() - _lastWrite;
+    if (since < gap) await sleep(Math.ceil(gap - since));
+    _lastWrite = Date.now();
+  };
+
+  const apiCall = (method, url, body, label) => _serialize(async () => {
+    const isWrite = method !== 'GET';
     let lastErr = null;
+
     for (let attempt = 0; attempt < 5; attempt++) {
+      await _waitTurn(isWrite);
       try {
         const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
-        return await withTimeout(p, 30000, label);
+        const res = await withTimeout(p, 30000, label);
+        _penalty = Math.max(0, _penalty - 500);
+        return res;
       } catch(e) {
         lastErr = e;
         if (isRateLimit(e) && attempt < 4) {
+          // Kazdy 429 podnosi staly odstep dla WSZYSTKICH kolejnych zapisow,
+          // zeby nie wpasc w ten sam limit przy nastepnym questcie.
+          _penalty = Math.min(15000, _penalty + CD.afterRateLimit);
           const wait = retryAfterMs(e);
-          log('rate limited (' + label + ') - waiting ' + Math.round(wait/1000) + 's');
+          log('rate limited (' + label + ') - czekam ' + Math.round(wait/1000)
+              + 's (globalny odstep: ' + Math.round((CD.minGap + _penalty)/1000) + 's)');
           await sleep(wait);
           continue;
         }
@@ -76,7 +141,7 @@ module.exports = `(async () => {
       }
     }
     throw lastErr;
-  };
+  });
 
   // ── Odczyt stanu z ODPOWIEDZI SERWERA (nie z lokalnych liczników) ─────────
   const progressOf = (body, taskName) => {
@@ -175,7 +240,16 @@ module.exports = `(async () => {
     log('/quests/@me failed: ' + ((e && e.message) || e));
   }
 
-  const sealedFor = (questId) => sealedByQuest[questId] || sealedGlobal || null;
+  // Kanoniczne zrodlo bloba to rekord questa w QuestsStore (camelCase).
+  // Lista z /quests/@me sluzy tylko jako zapasowe zrodlo.
+  const sealedFor = (questId) => {
+    try {
+      const q = QuestsStore.getQuest && QuestsStore.getQuest(questId);
+      const s = q && (q.trafficMetadataSealed || q.traffic_metadata_sealed);
+      if (s) return s;
+    } catch(_) {}
+    return sealedByQuest[questId] || sealedGlobal || null;
+  };
 
   const SUPPORTED = ['WATCH_VIDEO','WATCH_VIDEO_ON_MOBILE','PLAY_ON_DESKTOP','STREAM_ON_DESKTOP','PLAY_ACTIVITY'];
 
@@ -258,8 +332,13 @@ module.exports = `(async () => {
     let lastErr = null;
     for (const loc of locations) {
       try {
-        const body = { location: loc };
-        if (sealed) body.traffic_metadata_sealed = sealed;
+        // Pelny ksztalt body prawdziwego klienta - Discord odrzuca niekompletne.
+        const body = {
+          location: loc,
+          is_targeted: false,
+          metadata_sealed: null,
+          traffic_metadata_sealed: sealed,
+        };
         await apiCall('POST', '/quests/' + quest.id + '/enroll', body, 'enroll');
         knownLoc = loc;
         return { ok: true, loc: loc };
@@ -631,11 +710,18 @@ module.exports = `(async () => {
   const attemptClaim = async (quest, captchaKey = null) => {
     const sealed = sealedFor(quest.id);
 
-    // Ksztalt body prawdziwego klienta: odeslany blob atrybucyjny.
-    // Wczesniejsze warianty { platform: 0/1/2, claim_tier } byly zmyslone.
-    const payloads = sealed
-      ? [{ traffic_metadata_sealed: sealed }, {}]
-      : [{}];
+    // Dokladny ksztalt body prawdziwego klienta. Wszystkie piec pol jest
+    // wymagane - samo traffic_metadata_sealed daje 400 Invalid Form Body.
+    const payloads = [{
+      platform: 0,
+      location: knownLoc != null ? knownLoc : 11,
+      is_targeted: false,
+      metadata_sealed: null,
+      traffic_metadata_sealed: sealed,
+    }];
+
+    // Pauza przed claimem - ukonczone questy inaczej strzelaja seria w tej samej sekundzie.
+    await sleep(CD.beforeClaim + Math.random() * CD.jitter);
 
     // Wlasciwa sciezka to /claim-reward (zwraca 204). '/claim' nie istnieje -> stad 404.
     const paths = ['claim-reward'];
@@ -694,6 +780,10 @@ module.exports = `(async () => {
   };
 
   const claimReward = async (quest) => {
+    if (!sealedFor(quest.id)) {
+      log('Uwaga: brak traffic_metadata_sealed dla "' + nameOf(quest)
+          + '" - Discord może odrzucić claim jako niekompletny formularz.');
+    }
     log('Próba odebrania nagrody dla: ' + nameOf(quest));
     let r = await attemptClaim(quest);
 
@@ -734,7 +824,7 @@ module.exports = `(async () => {
         ? 'Nagroda odebrana i potwierdzona przez serwer.'
         : 'Nagroda zgłoszona (HTTP ' + r.status + '), ale nie udało się zweryfikować stanu u Discorda.');
 
-      const delay = Math.floor(8000 + Math.random() * 4000);
+      const delay = Math.floor(CD.betweenQuests + Math.random() * 4000);
       log('Czekam ' + Math.round(delay / 1000) + 's przed kolejnym zadaniem...');
       await sleep(delay);
       return { verified: verified === true };
@@ -763,6 +853,14 @@ module.exports = `(async () => {
       if (!res || !res.retry) break;
       log('Retry ' + attempts + '/' + MAX_ATTEMPTS + ' for ' + nameOf(q) + ': ' + res.err);
       await sleep(RETRY_PAUSE);
+    }
+
+    // Cooldown miedzy questami - obowiazuje takze po bledzie i po questach
+    // juz ukonczonych, ktore inaczej przelatuja caly szereg w jednej sekundzie.
+    if (q !== selected[selected.length - 1]) {
+      const gap = Math.floor(CD.betweenQuests + Math.random() * CD.jitter);
+      log('Cooldown ' + Math.round(gap / 1000) + 's przed kolejnym questem...');
+      await sleep(gap);
     }
   }
 
