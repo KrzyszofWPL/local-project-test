@@ -22,7 +22,8 @@ const path = require('path');
 //   4. Klikamy wytypowane kafelki i zatwierdzamy.
 //   5. Zwracamy token h-captcha-response.
 
-const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000/analyze-captcha';
+const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
+const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
 const CAPTCHA_URL = 'https://discord.com/__quest_captcha';
 const MAX_ROUNDS = parseInt(process.env.CAPTCHA_ROUNDS || '4', 10);
 const FRAME_WAIT_MS = parseInt(process.env.CAPTCHA_FRAME_WAIT || '30000', 10);
@@ -126,13 +127,21 @@ async function dumpState(page, log, tag) {
   }
 }
 
-async function askSolver(tiles, prompt, log) {
-  const res = await fetch(SOLVER_URL, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ tiles, target_object: prompt, grid: '3x3' }),
-    signal: AbortSignal.timeout(60000),
-  });
+// Solver routuje po typie zadania i odsyla akcje do wykonania: klikniecie
+// kafelkow albo przeciagniecie miedzy dwoma punktami.
+async function askSolver(payload, log) {
+  let res;
+  try {
+    res = await fetch(SOLVE_URL, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(120000),
+    });
+  } catch (e) {
+    log(`[GPU-AI] Solver nieosiągalny: ${(e && e.message) || e}`);
+    return null;
+  }
 
   const data = await res.json().catch(() => null);
   if (!res.ok) {
@@ -141,12 +150,37 @@ async function askSolver(tiles, prompt, log) {
     return null;
   }
   if (!data || !data.success) {
-    // Swiadoma odmowa solvera (nieznane zadanie) - nie klikamy na oslep.
-    log(`[GPU-AI] Solver odmówił: ${(data && (data.reason || data.detail)) || 'brak odpowiedzi'}`
+    // Swiadoma odmowa - nie klikamy na oslep, bo spalona proba kosztuje wiecej.
+    log(`[GPU-AI] Solver odmówił [${(data && data.kind) || '?'}]: `
+      + `${(data && data.reason) || 'brak odpowiedzi'}`
       + (data && data.detail ? ` – ${data.detail}` : ''));
     return null;
   }
-  return Array.isArray(data.click_indices) ? data.click_indices : [];
+  log(`[GPU-AI] Solver [${data.kind}/${data.model || '?'}] → akcja: ${data.action}`);
+  return data;
+}
+
+// Przeciagniecie wewnatrz ramki. Solver zwraca wspolrzedne znormalizowane
+// 0..1 wzgledem przeslanego zrzutu, wiec przeliczamy je na piksele strony
+// przez prostokat elementu, ktory zrzucalismy.
+async function performDrag(page, box, from, to, log) {
+  const px = (pt) => ({ x: box.x + pt[0] * box.width, y: box.y + pt[1] * box.height });
+  const a = px(from);
+  const b = px(to);
+  log(`[GPU-AI] Przeciągam (${Math.round(a.x)},${Math.round(a.y)})`
+    + ` → (${Math.round(b.x)},${Math.round(b.y)})`);
+
+  await page.mouse.move(a.x, a.y);
+  await page.mouse.down();
+  // Kilka posrednich krokow - skok w jednej klatce wyglada nienaturalnie.
+  const steps = 18;
+  for (let i = 1; i <= steps; i++) {
+    const t = i / steps;
+    await page.mouse.move(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    await page.waitForTimeout(15 + Math.random() * 25);
+  }
+  await page.mouse.up();
+  await page.waitForTimeout(600);
 }
 
 // hCaptcha wystawia rozne typy wyzwan. Solver oparty o detekcje obiektow
@@ -198,19 +232,52 @@ async function playRound(frame, log, page) {
   const tileLoc = frame.locator(TILE_SELECTORS);
   const count = await tileLoc.count();
 
+  // Zadania pozycyjne (przeciaganie, obracanie) nie maja kafelkow - wysylamy
+  // zrzut calego obszaru wyzwania i dostajemy wspolrzedne zamiast indeksow.
   if (!count) {
-    if (kind !== 'grid') {
-      log(`[GPU-AI] To wyzwanie typu "${kind}" - solver oparty o detekcję obiektów`
-        + ' nie ma jak go rozwiązać (brak siatki obrazków).');
-    } else {
+    if (kind === 'grid') {
       log('[GPU-AI] Polecenie wygląda na siatkę, ale nie znalazłem kafelków.');
+      if (page) await dumpState(page, log, 'brak-kafelkow');
+      return 'brak-kafelkow';
     }
-    if (page) await dumpState(page, log, 'brak-kafelkow');
-    return 'brak-kafelkow';
+
+    const area = frame.locator('.challenge-view, .challenge-container, body').first();
+    let box = null;
+    try { box = await area.boundingBox(); } catch (_) {}
+    if (!box) {
+      log('[GPU-AI] Nie udało się zmierzyć obszaru wyzwania.');
+      if (page) await dumpState(page, log, 'brak-obszaru');
+      return 'brak-kafelkow';
+    }
+
+    const shot = await area.screenshot({ timeout: 10000 });
+    const answer = await askSolver({
+      prompt: prompt,
+      kind: kind,
+      image_data: 'data:image/png;base64,' + shot.toString('base64'),
+    }, log);
+
+    if (!answer) return 'solver-odmowil';
+
+    if (answer.action === 'drag' && Array.isArray(answer.from) && Array.isArray(answer.to)) {
+      if (answer.confidence === 'low') {
+        log('[GPU-AI] Uwaga: model zgłasza NISKĄ pewność dla zadania pozycyjnego.');
+      }
+      await performDrag(page, box, answer.from, answer.to, log);
+    } else {
+      log(`[GPU-AI] Solver nie zwrócił wykonalnej akcji (${answer.action || '?'}).`);
+      return 'solver-odmowil';
+    }
+
+    const submitPos = frame.locator('.button-submit, .verify-button').first();
+    if (await submitPos.count()) {
+      await submitPos.click({ timeout: 5000 }).catch(() => {});
+    }
+    return 'zatwierdzone';
   }
 
   if (kind !== 'grid') {
-    log(`[GPU-AI] Kafelki są, ale polecenie nie wygląda na wybór obrazków`
+    log('[GPU-AI] Kafelki są, ale polecenie nie wygląda na wybór obrazków'
       + ' - próbuję mimo to.');
   }
 
@@ -221,10 +288,16 @@ async function playRound(frame, log, page) {
   }
   log(`[GPU-AI] Zrzucono ${tiles.length} kafelków, wysyłam do GPU...`);
 
-  const picks = await askSolver(tiles, prompt, log);
-  if (picks === null) return 'solver-odmowil';
+  const answer = await askSolver({ prompt: prompt, kind: 'grid', tiles: tiles }, log);
+  if (!answer) return 'solver-odmowil';
 
-  log(`[GPU-AI] GPU wytypowało kafelki: [${picks.join(', ')}]`);
+  const picks = Array.isArray(answer.click_indices) ? answer.click_indices : [];
+  log(`[GPU-AI] Cel "${answer.target || '?'}" → kafelki [${picks.join(', ')}]`);
+  if (!picks.length) {
+    log('[GPU-AI] Model nie wskazał żadnego kafelka - nie zatwierdzam pustej odpowiedzi.');
+    return 'solver-odmowil';
+  }
+
   for (const idx of picks) {
     if (idx < 0 || idx >= count) continue;
     await tileLoc.nth(idx).click({ timeout: 5000 }).catch(() => {});

@@ -8,7 +8,7 @@ module.exports = `(async () => {
   // Wypisywana jako pierwsza linia logu: jesli w panelu widzisz stary numer,
   // proces node'a trzyma poprzedni inject.js w cache require() i trzeba go
   // zrestartowac (samo Stop/Start w UI nie przeladowuje tego pliku).
-  const VERSION = 'v2.5';
+  const VERSION = 'v2.6';
   // ─────────────────────────────────────────────────────────────────────────
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
