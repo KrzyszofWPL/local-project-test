@@ -114,7 +114,7 @@ module.exports = `(async () => {
     _lastWrite = Date.now();
   };
 
-  const apiCall = (method, url, body, label) => _serialize(async () => {
+  const apiCall = (method, url, body, label, timeoutMs) => _serialize(async () => {
     const isWrite = method !== 'GET';
     let lastErr = null;
 
@@ -122,7 +122,7 @@ module.exports = `(async () => {
       await _waitTurn(isWrite);
       try {
         const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
-        const res = await withTimeout(p, 30000, label);
+        const res = await withTimeout(p, timeoutMs || 30000, label);
         _penalty = Math.max(0, _penalty - 500);
         return res;
       } catch(e) {
@@ -142,6 +142,50 @@ module.exports = `(async () => {
     }
     throw lastErr;
   });
+
+  // ── Diagnostyka zawieszonych requestow ────────────────────────────────────
+  // Warstwa API klienta Discorda przy captchy NIE odrzuca requestu - zawiesza
+  // go i czeka, az uzytkownik rozwiaze modal. Bez przegladarkowego usera taki
+  // request wisi w nieskonczonosc i widac tylko nasz timeout. Trzeba odroznic
+  // ten przypadek od zwyklego problemu sieciowego (np. wolne SOCKS5).
+  const captchaVisible = () => {
+    try {
+      const sel = 'iframe[src*="hcaptcha.com"], iframe[src*="recaptcha"],'
+                + ' [class*="captcha" i], [id*="captcha" i]';
+      return !!document.querySelector(sel);
+    } catch(_) { return false; }
+  };
+
+  // Discord usuwa window.localStorage, zeby utrudnic czytanie tokenu.
+  // Ta sama sztuczka co w engine.js: swiezy iframe ma wlasny, nietkniety obiekt.
+  const readToken = () => {
+    try {
+      let ls = window.localStorage;
+      if (!ls) {
+        const f = document.createElement('iframe');
+        document.body.appendChild(f);
+        ls = f.contentWindow.localStorage;
+        f.remove();
+      }
+      const raw = ls && ls.getItem('token');
+      return raw ? JSON.parse(raw) : null;
+    } catch(_) { return null; }
+  };
+
+  // Zapasowy POST z pominieciem modulu API Discorda - goly fetch nie da sie
+  // zawiesic na modalu captchy, wiec zwraca PRAWDZIWY status i tresc bledu.
+  const rawApiPost = async (path, body) => {
+    const token = readToken();
+    if (!token) throw new Error('brak tokenu do zapasowego requestu');
+    const res = await fetch('/api/v9' + path, {
+      method: 'POST',
+      headers: { 'authorization': token, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    let parsed = null;
+    try { parsed = await res.json(); } catch(_) {}
+    return { status: res.status, body: parsed, ok: res.status >= 200 && res.status < 300 };
+  };
 
   // ── Odczyt stanu z ODPOWIEDZI SERWERA (nie z lokalnych liczników) ─────────
   const progressOf = (body, taskName) => {
@@ -318,6 +362,27 @@ module.exports = `(async () => {
 
   // ── 4. Quest enrollment ───────────────────────────────────────────────────
   log('Found ' + selected.length + ' quest(s) to process');
+
+  // Test lacznosci z solverem. Bez niego "brak wiadomosci po stronie Pythona"
+  // jest nieodroznialne od: solver nigdy nie zostal wywolany, CSP zablokowalo
+  // polaczenie, albo serwer nie stoi. Robimy to RAZ, na starcie.
+  (async () => {
+    const url = 'http://127.0.0.1:5000/analyze-captcha';
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ping: true }),
+      });
+      log('[GPU-AI] Solver odpowiada: HTTP ' + res.status + ' (' + url + ')');
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      log('[GPU-AI] Solver NIEOSIĄGALNY: ' + m
+          + (/content security policy|csp|refused to connect/i.test(m)
+              ? ' -> blokuje CSP Discorda, nie zapora. Z poziomu strony się nie da.'
+              : ' -> sprawdź, czy serwer Pythona stoi na 127.0.0.1:5000.'));
+    }
+  })();
 
   let knownLoc = null;
 
@@ -735,7 +800,7 @@ module.exports = `(async () => {
           const body = { ...baseBody };
           if (captchaKey) body.captcha_key = captchaKey;
 
-          const res = await apiCall('POST', '/quests/' + quest.id + '/' + path, body, 'claim');
+          const res = await apiCall('POST', '/quests/' + quest.id + '/' + path, body, 'claim', 60000);
           return { ok: true, status: res.status, body: res.body, path: path };
         } catch (e) {
           lastErr = e;
@@ -743,6 +808,35 @@ module.exports = `(async () => {
 
           if (/captcha|verif/i.test(String(msg)) || (e && e.status === 400 && e.body && e.body.captcha_key)) {
             return { captcha: true };
+          }
+
+          // Timeout: modul API Discorda zawiesza request na modalu captchy.
+          // Sondujemy DOM i powtarzamy golym fetchem, ktory nie da sie zawiesic.
+          if (/^timeout /.test(String(msg))) {
+            const modal = captchaVisible();
+            log('Claim nie odpowiedział w zadanym czasie. Modal captchy w DOM: '
+                + (modal ? 'TAK' : 'nie') + '. Ponawiam z pominięciem warstwy API klienta...');
+            try {
+              const raw = await rawApiPost('/quests/' + quest.id + '/' + path, body);
+              log('Zapasowy claim: HTTP ' + raw.status
+                  + (raw.body && raw.body.message ? ' - ' + raw.body.message : ''));
+
+              if (raw.ok) return { ok: true, status: raw.status, body: raw.body, path: path };
+
+              if (raw.body && (raw.body.captcha_key || raw.body.captcha_sitekey
+                               || /captcha/i.test(String(raw.body.message || '')))) {
+                return { captcha: true, sitekey: raw.body.captcha_sitekey || null };
+              }
+
+              lastErr = { status: raw.status, body: raw.body,
+                          message: (raw.body && raw.body.message) || ('HTTP ' + raw.status) };
+              sawNonNotFound = raw.status !== 404;
+              break;
+            } catch (e2) {
+              log('Zapasowy claim też nie przeszedł: ' + ((e2 && e2.message) || e2)
+                  + (modal ? '' : ' - brak modalu captchy, więc to wygląda na problem sieci/proxy.'));
+              break;
+            }
           }
 
           // 404 = ten endpoint nie istnieje LUB quest nie jest zapisany.
