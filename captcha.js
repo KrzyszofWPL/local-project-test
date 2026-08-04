@@ -178,6 +178,43 @@ async function dumpState(page, log, tag) {
   }
 }
 
+// hCaptcha najpierw buduje szkielet zadania, a dopiero potem dociaga grafike -
+// przez proxy potrafi to trwac sekundy. `challengeFrame()` zwraca ramke, gdy
+// tylko pojawia sie elementy kafelkow, wiec bez tego czekania zrzucalismy
+// PUSTE ramki: panel z bialym srodkiem, dokladnie jak na zrzucie z debugu.
+// Kafelki hCaptchy noszą grafike jako background-image, nie jako <img>.
+async function waitForChallengeImages(frame, log, ms) {
+  const deadline = Date.now() + (ms || 15000);
+  let last = -1;
+  while (Date.now() < deadline) {
+    const stat = await frame.evaluate(() => {
+      const sel = '.task-image, .image-wrapper, [class*="task-image"]';
+      const els = Array.from(document.querySelectorAll(sel));
+      let loaded = 0;
+      for (const el of els) {
+        const inner = el.querySelector('.image') || el;
+        const bg = getComputedStyle(inner).backgroundImage;
+        if (bg && bg !== 'none' && bg.indexOf('url(') !== -1) loaded++;
+      }
+      // Zadania pozycyjne nie maja kafelkow - tam patrzymy na canvas/obrazki.
+      const canvas = document.querySelectorAll('canvas, .challenge-view img').length;
+      return { total: els.length, loaded: loaded, canvas: canvas };
+    }).catch(() => null);
+
+    if (!stat) return false;
+    if (stat.total && stat.loaded >= stat.total) return true;
+    if (!stat.total && stat.canvas) return true;
+
+    if (stat.loaded !== last) {
+      last = stat.loaded;
+      if (stat.total) log(`[GPU-AI] Ładowanie grafiki zadania: ${stat.loaded}/${stat.total}`);
+    }
+    await frame.page().waitForTimeout(500);
+  }
+  log('[GPU-AI] Grafika zadania nie doładowała się w czasie – zrzucam, co jest.');
+  return false;
+}
+
 // Solver routuje po typie zadania i odsyla akcje do wykonania: klikniecie
 // kafelkow albo przeciagniecie miedzy dwoma punktami.
 async function askSolver(payload, log) {
@@ -259,7 +296,10 @@ function classifyChallenge(prompt) {
   // Obejmuje takze wyzwania "semantyczne" ("wybierz zwierze, ktore wykluwa sie
   // z jajka") - to nadal wybor obrazka, tylko polecenie opisuje go pojęciem,
   // a nie nazwa. Wczesniej wpadaly w 'nieznany' i solver je odrzucal.
-  if (/click each image|select all|containing a|zaznacz|kliknij|wybierz|\bselect the\b|\bchoose\b|\bwhich of\b/.test(p)) {
+  // Kazde "select …" / "click …" to wybor kafelkow. Wczesniejsza lista
+  // wyliczala konkretne sformulowania i przepuszczala warianty w rodzaju
+  // "Select items that are primarily metal", ktore ladowaly w 'nieznany'.
+  if (/\bselect\b|\bclick\b|\bchoose\b|\bpick\b|\bwhich of\b|zaznacz|kliknij|wybierz/.test(p)) {
     return 'grid';
   }
   return 'nieznany';
@@ -295,13 +335,13 @@ async function reroll(frame, log) {
       return true;
     }
 
-    // Zaden nie przechodzi testu widocznosci - wysylamy zdarzenie wprost.
-    // dispatchEvent nie wymaga widocznosci ani stabilnosci elementu.
+    // NIE forsujemy klikniecia przez dispatchEvent. Sprawdzone: syntetyczne
+    // zdarzenie na przycisku odswiezania hCaptcha odrzuca i psuje cale
+    // wyzwanie - w logu wychodzi "challenge-error" dwie sekundy pozniej.
+    // Lepiej zrezygnowac z przelosowania i sprobowac rozwiazac to, co jest.
     log(`[GPU-AI] Żaden z ${n} przycisków odświeżenia nie jest widoczny`
-      + ' – wysyłam zdarzenie click bezpośrednio.');
-    await all.first().dispatchEvent('click');
-    await frame.page().waitForTimeout(2000);
-    return true;
+      + ' – rezygnuję z przelosowania (wymuszony klik psuje wyzwanie).');
+    return false;
   } catch (e) {
     log(`[GPU-AI] Nie udało się wylosować nowego wyzwania: ${(e && e.message) || e}`);
     return false;
@@ -386,6 +426,8 @@ async function playRound(frame, log, page, opts) {
 
     // Zrzut PRZED pomiarem: screenshot() przewija element do widoku, wiec
     // prostokat musi pochodzic z tego samego stanu strony co obrazek.
+    await waitForChallengeImages(frame, log);
+
     const shot = await area.loc.screenshot({ timeout: 10000 });
 
     // Ramka hCaptchy jest cross-origin, wiec Chromium renderuje ja w osobnym
@@ -445,6 +487,8 @@ async function playRound(frame, log, page, opts) {
     log('[GPU-AI] Kafelki są, ale polecenie nie wygląda na wybór obrazków'
       + ' - próbuję mimo to.');
   }
+
+  await waitForChallengeImages(frame, log);
 
   const tiles = [];
   let blankTiles = 0;
