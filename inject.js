@@ -262,14 +262,23 @@ module.exports = `(async () => {
   // Ta sama sztuczka co w engine.js: swiezy iframe ma wlasny, nietkniety obiekt.
   const readToken = () => {
     try {
-      let ls = window.localStorage;
-      if (!ls) {
-        const f = document.createElement('iframe');
-        document.body.appendChild(f);
-        ls = f.contentWindow.localStorage;
+      const ls = window.localStorage;
+      if (ls) {
+        const direct = ls.getItem('token');
+        return direct ? JSON.parse(direct) : null;
+      }
+      // Odczyt MUSI nastapic, zanim ramka zostanie odpieta: po remove()
+      // przegladarka niszczy jej dokument, a getItem() na osieroconym obiekcie
+      // rzuca SecurityError. Wczesniej remove() bylo przed odczytem, wiec ta
+      // sciezka nie zwracala tokenu NIGDY - blad byl polykany przez catch.
+      const f = document.createElement('iframe');
+      document.body.appendChild(f);
+      let raw = null;
+      try {
+        raw = f.contentWindow.localStorage.getItem('token');
+      } finally {
         f.remove();
       }
-      const raw = ls && ls.getItem('token');
       return raw ? JSON.parse(raw) : null;
     } catch(_) { return null; }
   };
