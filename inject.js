@@ -3,9 +3,27 @@ module.exports = `(async () => {
   if (window.__questBotActive) return { fatal: 'script already running in this tab' };
   window.__questBotActive = true;
 
+  // ─────────────────────────────────────────────────────────────────────────
+  // WERSJA SKRYPTU - podnies przy KAZDEJ zmianie w tym pliku.
+  // Wypisywana jako pierwsza linia logu: jesli w panelu widzisz stary numer,
+  // proces node'a trzyma poprzedni inject.js w cache require() i trzeba go
+  // zrestartowac (samo Stop/Start w UI nie przeladowuje tego pliku).
+  const VERSION = 'v2.1';
+  // ─────────────────────────────────────────────────────────────────────────
+
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const R = (o) => { try { window.__questReport(o); } catch(_) {} };
   const log = m => R({ t: 'log', m: String(m) });
+
+  // Szczegolowy log. Domyslnie wlaczony; wylaczyc przez QUEST_DEBUG=false.
+  const DEBUG = window.__questDebug !== false;
+  const dbg = m => { if (DEBUG) R({ t: 'log', m: '  · ' + String(m) }); };
+
+  R({ t: 'version', version: VERSION });
+  log('══ inject ' + VERSION + ' start ══ ' + new Date().toISOString()
+      + ' | debug=' + (DEBUG ? 'on' : 'off'));
+  dbg('URL: ' + location.href);
+  dbg('UA: ' + navigator.userAgent);
 
   // ── 1. Webpack ────────────────────────────────────────────────────────────
   for (let i = 0; i < 120 && !window.webpackChunkdiscord_app; i++) await sleep(500);
@@ -39,6 +57,16 @@ module.exports = `(async () => {
 
   if (!api) return { fatal: 'api module not found' };
 
+  // Ktore moduly znalezione, a ktore nie - brakujacy store tlumaczy pozniejsze
+  // "not found" przy konkretnych typach zadan, zamiast zostawiac to w domysle.
+  dbg('moduły: ' + [
+    ['QuestsStore', QuestsStore], ['api', api], ['UserStore', UserStore],
+    ['RunningGameStore', RunningGameStore], ['FluxDispatcher', FluxDispatcher],
+    ['ChannelStore', ChannelStore], ['GuildChannelStore', GuildChannelStore],
+    ['ApplicationStreamingStore', ApplicationStreamingStore],
+  ].map(p => p[0] + '=' + (p[1] ? 'ok' : 'BRAK')).join(' '));
+  dbg('modułów w webpacku: ' + mods.length);
+
   // ── API call layer ────────────────────────────────────────────────────────
   const withTimeout = (p, ms, label) => Promise.race([
     p,
@@ -70,6 +98,27 @@ module.exports = `(async () => {
 
   const errMsg = e => ((e && e.body && e.body.message) || (e && e.message)
     || ('HTTP ' + (e && e.status))) + formErrors(e);
+
+  // Kompaktowy podglad obiektu do logu: dlugie wartosci (np. zapieczetowany
+  // blob) skracane, zeby jeden request nie zajmowal calego panelu.
+  const summarize = (o) => {
+    try {
+      if (o == null) return String(o);
+      if (typeof o !== 'object') return String(o).slice(0, 80);
+      const parts = [];
+      for (const k of Object.keys(o).slice(0, 10)) {
+        const v = o[k];
+        let s;
+        if (v == null) s = String(v);
+        else if (typeof v === 'object') s = Array.isArray(v) ? '[' + v.length + ']' : '{…}';
+        else s = String(v);
+        if (s.length > 24) s = s.slice(0, 21) + '…(' + s.length + ')';
+        parts.push(k + '=' + s);
+      }
+      if (Object.keys(o).length > 10) parts.push('…');
+      return '{' + parts.join(' ') + '}';
+    } catch(_) { return '{?}'; }
+  };
 
   const isRateLimit = (e) => {
     if (!e) return false;
@@ -120,12 +169,20 @@ module.exports = `(async () => {
 
     for (let attempt = 0; attempt < 5; attempt++) {
       await _waitTurn(isWrite);
+      const t0 = Date.now();
+      dbg('→ ' + method + ' ' + url + ' [' + label + ']'
+          + (attempt ? ' (próba ' + (attempt + 1) + ')' : '')
+          + (isWrite && body ? ' body=' + summarize(body) : ''));
       try {
         const p = method === 'GET' ? api.get({ url: url }) : api.post({ url: url, body: body });
         const res = await withTimeout(p, timeoutMs || 30000, label);
         _penalty = Math.max(0, _penalty - 500);
+        dbg('← ' + (res && res.status) + ' ' + label + ' (' + (Date.now() - t0) + 'ms)'
+            + (res && res.body ? ' ' + summarize(res.body) : ''));
         return res;
       } catch(e) {
+        dbg('← BŁĄD ' + label + ' po ' + (Date.now() - t0) + 'ms: '
+            + (e && e.status ? '[' + e.status + '] ' : '') + errMsg(e));
         lastErr = e;
         if (isRateLimit(e) && attempt < 4) {
           // Kazdy 429 podnosi staly odstep dla WSZYSTKICH kolejnych zapisow,
@@ -322,16 +379,30 @@ module.exports = `(async () => {
 
   const all = apiQuests.length ? apiQuests : [...QuestsStore.quests.values()];
 
+  dbg('źródło listy: ' + (apiQuests.length ? '/quests/@me' : 'QuestsStore')
+      + ', questów łącznie: ' + all.length);
+
+  // Zliczamy powody odrzucenia - inaczej "13 z 34" nic nie mowi.
+  const rejected = { claimed: 0, expired: 0, noConfig: 0, unsupportedTask: 0 };
+
   const pending = all.filter(q => {
     const tc = q.config && (q.config.taskConfig || q.config.taskConfigV2);
     const isClaimed = !!(q.userStatus && q.userStatus.claimedAt);
-    
-    return q.config 
-        && !isClaimed
-        && new Date(q.config.expiresAt).getTime() > Date.now()
-        && tc && tc.tasks
-        && SUPPORTED.some(t => t in tc.tasks);
+
+    if (!q.config) { rejected.noConfig++; return false; }
+    if (isClaimed) { rejected.claimed++; return false; }
+    if (!(new Date(q.config.expiresAt).getTime() > Date.now())) { rejected.expired++; return false; }
+    if (!tc || !tc.tasks || !SUPPORTED.some(t => t in tc.tasks)) {
+      rejected.unsupportedTask++;
+      return false;
+    }
+    return true;
   });
+
+  dbg('odrzucone: odebrane=' + rejected.claimed + ' wygasłe=' + rejected.expired
+      + ' bez configu=' + rejected.noConfig
+      + ' nieobsługiwany typ=' + rejected.unsupportedTask
+      + ' → do zrobienia: ' + pending.length);
 
   const PRIORITY = { WATCH_VIDEO: 0, WATCH_VIDEO_ON_MOBILE: 0, PLAY_ACTIVITY: 1, PLAY_ON_DESKTOP: 2, STREAM_ON_DESKTOP: 3 };
   const taskOf = q => {

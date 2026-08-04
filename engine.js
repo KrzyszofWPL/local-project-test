@@ -16,6 +16,17 @@ const PROFILES_DIR = path.join(__dirname, 'profiles');
 
 const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?format=json';
 
+// Wersja silnika. Podnies razem z VERSION w inject.js przy kazdej zmianie -
+// obie sa wypisywane do logu konta, wiec od razu widac, czy panel zostal
+// zrestartowany, czy wciaz chodzi na starym kodzie z cache require().
+const ENGINE_VERSION = 'v2.1';
+
+// Debug jest gadatliwy, wiec trzymamy wiecej historii i pokazujemy jej wiecej,
+// zeby szczegolowe linie nie wypychaly z panelu tych istotnych.
+const LOG_KEEP = parseInt(process.env.LOG_KEEP || '800', 10);
+const LOG_UI_LIMIT = parseInt(process.env.LOG_UI_LIMIT || '150', 10);
+const QUEST_DEBUG = process.env.QUEST_DEBUG !== 'false';
+
 // Keep WebRTC from punching UDP straight out of the box and revealing the real
 // IP while every HTTP request goes through the proxy. Only applied to proxied
 // browsers – without a proxy there is nothing to leak past.
@@ -446,7 +457,9 @@ class Engine extends EventEmitter {
           percent: target > 0 ? Math.round((done / target) * 100) : 0,
           quests: a.quests,
           skipped: a.skipped ?? [],
-          logs: a.logs.slice(-40),
+          injectVersion: a.injectVersion ?? null,
+          engineVersion: ENGINE_VERSION,
+          logs: a.logs.slice(-LOG_UI_LIMIT),
         };
       }),
     };
@@ -559,7 +572,7 @@ class Engine extends EventEmitter {
 
   _log(acc, msg) {
     acc.logs.push({ ts: Date.now(), msg: String(msg) });
-    if (acc.logs.length > 300) acc.logs.shift();
+    if (acc.logs.length > LOG_KEEP) acc.logs.shift();
     this.emit('update');
   }
 
@@ -777,6 +790,11 @@ class Engine extends EventEmitter {
         });
       }
 
+      this._log(acc, `── engine ${ENGINE_VERSION} | headless=${this.headless}`
+        + ` desktop=${this.desktopMode} proxy=${proxy ? proxy.label : 'brak'}`
+        + ` stagger=${Math.round(this.startStagger / 1000)}s`
+        + ` cooldowny=${JSON.stringify(this.cooldowns)}`);
+
       this._push(acc, { message: 'Checking the account…' });
       await this._fetchIdentity(acc, context);
 
@@ -832,6 +850,14 @@ class Engine extends EventEmitter {
       this._push(acc, { message: 'Looking for quests…' });
       await page.evaluate(o => { window.__questOpts = o; }, { onlyOrbs: this.onlyOrbs });
       await page.evaluate(cd => { window.__questCooldowns = cd; }, this.cooldowns);
+      await page.evaluate(d => { window.__questDebug = d; }, QUEST_DEBUG);
+
+      // Bledy ze strony trafialy dotad w prozne - konsola przegladarki jest
+      // niewidoczna w trybie headless, wiec przepinamy ja do logu konta.
+      page.on('pageerror', e => this._log(acc, 'JS w stronie: ' + shortError(e)));
+      page.on('console', m => {
+        if (m.type() === 'error') this._log(acc, 'console.error: ' + m.text().slice(0, 300));
+      });
       const result = await page.evaluate(INJECT_SCRIPT);
 
       if (result?.fatal) {
@@ -866,6 +892,16 @@ class Engine extends EventEmitter {
     switch (ev.t) {
       case 'log':
         this._log(acc, ev.m);
+        break;
+
+      case 'version':
+        acc.injectVersion = ev.version;
+        // Rozjazd wersji = strona dostala inny inject.js niz ten na dysku.
+        if (ev.version !== ENGINE_VERSION) {
+          this._log(acc, `UWAGA: inject ${ev.version} vs engine ${ENGINE_VERSION}`
+            + ' – zrestartuj proces node, require() trzyma stary skrypt w cache.');
+        }
+        this.emit('update');
         break;
 
       case 'user':
