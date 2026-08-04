@@ -1,5 +1,8 @@
 'use strict';
 
+const fs = require('fs');
+const path = require('path');
+
 // ── Mostek do rozwiazywania hCaptcha ────────────────────────────────────────
 //
 // Discord odrzuca claim z wyzwaniem hCaptcha: sitekey + rqdata + rqtoken.
@@ -22,6 +25,7 @@
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000/analyze-captcha';
 const CAPTCHA_URL = 'https://discord.com/__quest_captcha';
 const MAX_ROUNDS = parseInt(process.env.CAPTCHA_ROUNDS || '4', 10);
+const FRAME_WAIT_MS = parseInt(process.env.CAPTCHA_FRAME_WAIT || '30000', 10);
 
 function pageHtml(sitekey, rqdata) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>verify</title></head>
@@ -43,9 +47,18 @@ function pageHtml(sitekey, rqdata) {
       });
       window.__capWidget = id;
       window.__capReady = true;
-      var opts = {};
+      var opts = { async: true };
       ${rqdata ? `opts.rqdata = ${JSON.stringify(rqdata)};` : ''}
-      hcaptcha.execute(id, opts);
+      // Wariant obietnicowy obok callbacku - przy niewidocznym widgecie to on
+      // niesie wynik, a przy okazji lapiemy powod odmowy.
+      var p = hcaptcha.execute(id, opts);
+      if (p && typeof p.then === 'function') {
+        p.then(function (r) {
+          window.__capToken = (r && (r.response || r.token)) || window.__capToken;
+        }).catch(function (e) {
+          window.__capError = 'execute: ' + String((e && e.message) || e);
+        });
+      }
     } catch (e) {
       window.__capError = String((e && e.message) || e);
     }
@@ -57,23 +70,59 @@ function pageHtml(sitekey, rqdata) {
 
 // Ramka z wyzwaniem (siatka obrazkow) - hCaptcha trzyma osobna ramke na
 // checkbox i osobna na samo wyzwanie. Interesuje nas ta druga.
+// Klasy w ramce hCaptcha bywaja zmieniane, wiec nie opieramy sie na jednej.
+const TILE_SELECTORS = '.task-image, .image-wrapper, [class*="task-image"], [class*="challenge"] .image';
+const PROMPT_SELECTORS = '.prompt-text, [class*="prompt-text"], .challenge-prompt';
+
 async function challengeFrame(page) {
-  for (const frame of page.frames()) {
-    const url = frame.url() || '';
-    if (url.indexOf('hcaptcha.com') === -1) continue;
-    if (url.indexOf('/challenge') === -1 && url.indexOf('hcaptcha-challenge') === -1) continue;
+  const frames = page.frames().filter(f => (f.url() || '').indexOf('hcaptcha.com') !== -1);
+  // Najpierw ramka, ktora naprawde ma kafelki - niezaleznie od ksztaltu URL-a.
+  for (const frame of frames) {
     try {
-      if (await frame.locator('.challenge-view, .task-image').first().count()) return frame;
+      if (await frame.locator(TILE_SELECTORS).first().count()) return frame;
     } catch (_) {}
   }
-  // Zapasowo: dowolna ramka hCaptcha, ktora ma kafelki.
-  for (const frame of page.frames()) {
-    if ((frame.url() || '').indexOf('hcaptcha.com') === -1) continue;
+  // Potem taka, ktora ma chociaz tresc polecenia (kafelki moga sie doladowywac).
+  for (const frame of frames) {
     try {
-      if (await frame.locator('.task-image').first().count()) return frame;
+      if (await frame.locator(PROMPT_SELECTORS).first().count()) return frame;
     } catch (_) {}
   }
   return null;
+}
+
+// Gdy ramka wyzwania sie nie znajduje, jedyne co pomaga to zobaczyc, co
+// naprawde jest na stronie: lista ramek z liczba elementow kandydatow oraz
+// zrzut ekranu na dysk.
+async function dumpState(page, log, tag) {
+  const frames = page.frames();
+  log(`[GPU-AI] Diagnostyka (${tag}): ramek=${frames.length}`);
+  for (const f of frames) {
+    let info;
+    try {
+      info = JSON.stringify(await f.evaluate(() => ({
+        task: document.querySelectorAll('.task-image').length,
+        chal: document.querySelectorAll('.challenge-view').length,
+        prompt: document.querySelectorAll('.prompt-text').length,
+        img: document.querySelectorAll('img').length,
+        iframe: document.querySelectorAll('iframe').length,
+        txt: (document.body ? document.body.innerText : '').slice(0, 60).replace(/\s+/g, ' '),
+      })));
+    } catch (e) {
+      info = 'evaluate: ' + String((e && e.message) || e).slice(0, 60);
+    }
+    log(`[GPU-AI]   ${(f.url() || 'about:blank').slice(0, 110)} ${info}`);
+  }
+
+  try {
+    const dir = path.join(__dirname, 'captcha-debug');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, `${Date.now()}-${tag}.png`);
+    await page.screenshot({ path: file, fullPage: true });
+    log(`[GPU-AI] Zrzut ekranu: ${file}`);
+  } catch (e) {
+    log(`[GPU-AI] Nie udało się zrobić zrzutu: ${(e && e.message) || e}`);
+  }
 }
 
 async function askSolver(tiles, prompt, log) {
@@ -104,14 +153,14 @@ async function askSolver(tiles, prompt, log) {
 async function playRound(frame, log) {
   let prompt = '';
   try {
-    prompt = (await frame.locator('.prompt-text').first().innerText({ timeout: 5000 })).trim();
+    prompt = (await frame.locator(PROMPT_SELECTORS).first().innerText({ timeout: 8000 })).trim();
   } catch (_) {
     log('[GPU-AI] Nie udało się odczytać treści zadania z ramki.');
     return false;
   }
   log(`[GPU-AI] Zadanie: "${prompt}"`);
 
-  const tileLoc = frame.locator('.task-image');
+  const tileLoc = frame.locator(TILE_SELECTORS);
   const count = await tileLoc.count();
   if (!count) {
     log('[GPU-AI] Brak kafelków w ramce wyzwania.');
@@ -193,13 +242,31 @@ async function solveCaptcha(context, challenge, log) {
         return null;
       }
 
+      // Wyzwanie potrafi sie ladowac dluzej niz kilka sekund, zwlaszcza przez
+      // proxy - czekamy do FRAME_WAIT_MS, po drodze sprawdzajac, czy token nie
+      // przyszedl bez pokazywania siatki.
       let frame = null;
-      for (let i = 0; i < 20 && !frame; i++) {
+      const deadline = Date.now() + FRAME_WAIT_MS;
+      while (!frame && Date.now() < deadline) {
         frame = await challengeFrame(page);
-        if (!frame) await page.waitForTimeout(500);
+        if (frame) break;
+        const t = await page.evaluate(() => window.__capToken);
+        if (t) {
+          log('[GPU-AI] Token przyszedł bez siatki (wyzwanie pominięte).');
+          return t;
+        }
+        const e2 = await page.evaluate(() => window.__capError);
+        if (e2) {
+          log(`[GPU-AI] hCaptcha przerwała: ${e2}`);
+          await dumpState(page, log, 'error');
+          return null;
+        }
+        await page.waitForTimeout(500);
       }
+
       if (!frame) {
-        log('[GPU-AI] Ramka wyzwania nie pojawiła się.');
+        log(`[GPU-AI] Ramka wyzwania nie pojawiła się w ${Math.round(FRAME_WAIT_MS / 1000)}s.`);
+        await dumpState(page, log, 'brak-ramki');
         return null;
       }
 

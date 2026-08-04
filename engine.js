@@ -20,7 +20,7 @@ const PROXY_CHECK_URL = process.env.PROXY_CHECK_URL || 'https://api.ipify.org?fo
 // Wersja silnika. Podnies razem z VERSION w inject.js przy kazdej zmianie -
 // obie sa wypisywane do logu konta, wiec od razu widac, czy panel zostal
 // zrestartowany, czy wciaz chodzi na starym kodzie z cache require().
-const ENGINE_VERSION = 'v2.3';
+const ENGINE_VERSION = 'v2.4';
 
 // Debug jest gadatliwy, wiec trzymamy wiecej historii i pokazujemy jej wiecej,
 // zeby szczegolowe linie nie wypychaly z panelu tych istotnych.

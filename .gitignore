@@ -9,3 +9,4 @@ __pycache__/
 # *.example.txt templates; the working files stay local only.
 tokens.txt
 ip.txt
+captcha-debug/
