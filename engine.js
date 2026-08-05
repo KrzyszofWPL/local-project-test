@@ -9,7 +9,15 @@ const {
   playwrightProxy, detectScheme, lastErrorFor, closeAll: closeBridges,
 } = require('./socks-bridge.js');
 const { fingerprintFor, fingerprintLabel, initScript } = require('./fingerprint.js');
-const { solveCaptcha } = require('./captcha.js');
+const { solveCaptcha, SOLVER_URL, CAPTCHA_VERSION } = require('./captcha.js');
+
+// Wersja wstrzykiwanego skryptu, wyczytana wprost z jego zrodla. Trzy pliki
+// (engine/inject/captcha) i CZWARTY proces (solver.py) moga byc niezaleznie
+// nieaktualne: node cache'uje require(), a start.bat celowo nie restartuje
+// solvera, ktory juz nasluchuje. Diagnoza z logu byla przez to dwukrotnie
+// stawiana pod zle wersje kodu - dlatego wszystkie numery ida do PIERWSZEJ
+// linii logu konta.
+const INJECT_VERSION = (String(INJECT_SCRIPT).match(/VERSION\s*=\s*'([^']+)'/) || [])[1] || '?';
 
 const TOKENS_FILE = path.join(__dirname, 'tokens.txt');
 const STATE_FILE = path.join(__dirname, 'state.json');
@@ -913,10 +921,16 @@ class Engine extends EventEmitter {
         });
       }
 
-      this._log(acc, `── engine ${ENGINE_VERSION} | headless=${this.headless}`
+      this._log(acc, `── engine ${ENGINE_VERSION} inject ${INJECT_VERSION}`
+        + ` captcha ${CAPTCHA_VERSION} | headless=${this.headless}`
         + ` desktop=${this.desktopMode} proxy=${proxy ? proxy.label : 'brak'}`
         + ` stagger=${Math.round(this.startStagger / 1000)}s`
         + ` cooldowny=${JSON.stringify(this.cooldowns)}`);
+
+      // Solver to OSOBNY proces - start.bat zostawia go w spokoju, jesli juz
+      // nasluchuje. Odpytujemy go o wersje na starcie, zeby stary proces byl
+      // widoczny OD RAZU, a nie dopiero przy pierwszej odmowie rozwiazania.
+      this._reportSolverVersion(acc);
 
       this._push(acc, { message: 'Checking the account…' });
       await this._fetchIdentity(acc, context);
@@ -1052,6 +1066,26 @@ class Engine extends EventEmitter {
         try { await context.close(); } catch (_) {}
       }
       this._saveState();
+    }
+  }
+
+  // Wersja solvera z /health. Nie blokuje startu konta - to tylko informacja
+  // do logu, ale taka, ktora oszczedza godziny diagnozowania kodu, ktory
+  // wcale nie jest uruchomiony.
+  async _reportSolverVersion(acc) {
+    try {
+      const res = await fetch(SOLVER_URL.replace(/\/+$/, '') + '/health', {
+        signal: AbortSignal.timeout(5000),
+      });
+      const body = await res.json().catch(() => null);
+      const v = body && body.version;
+      this._log(acc, v
+        ? `── solver ${v} (${(body && body.device) || '?'})`
+        : '── solver ODPOWIADA, ALE BEZ WERSJI – to stary proces Pythona.'
+          + ' Ubij okno "hCaptcha solver" i uruchom start.bat ponownie.');
+    } catch (e) {
+      this._log(acc, '── solver nieosiągalny na ' + SOLVER_URL
+        + ' – rozwiązywanie CAPTCHA będzie niedostępne.');
     }
   }
 

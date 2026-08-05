@@ -67,7 +67,17 @@ call :start_solver
 goto solver_done
 
 :solver_running
-echo [Solver] Already listening on 127.0.0.1:5000 - not starting a second one.
+echo [Solver] Something is ALREADY listening on 127.0.0.1:5000.
+echo.
+echo     ^>^> This start.bat will NOT restart it, so that process is still
+echo        running the solver.py it was started with. If you have just
+echo        pulled new code, it is STALE and your fixes are not live.
+echo.
+echo        Close the "hCaptcha solver" window (or: taskkill /f /im python.exe)
+echo        and run start.bat again.
+echo.
+echo        The panel log prints the solver version on every account start -
+echo        check it matches the SOLVER_VERSION in solver.py.
 echo.
 goto solver_done
 

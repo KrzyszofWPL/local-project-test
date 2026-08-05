@@ -959,4 +959,4 @@ async function solveCaptcha(context, challenge, log) {
   }
 }
 
-module.exports = { solveCaptcha, SOLVER_URL };
+module.exports = { solveCaptcha, SOLVER_URL, CAPTCHA_VERSION };
