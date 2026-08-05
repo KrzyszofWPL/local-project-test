@@ -45,6 +45,7 @@ import json
 import multiprocessing
 import os
 import re
+import threading
 import time
 from typing import Dict, List, Optional, Tuple
 
@@ -60,7 +61,7 @@ from pydantic import BaseModel
 # restartowany przez Stop/Start w panelu - to osobny serwer uvicorn, ktory
 # trzeba ubic recznie. Bez numeru w logu nie da sie odroznic "poprawka nie
 # dziala" od "poprawka nie zostala zaladowana".
-SOLVER_VERSION = "s1.1"
+SOLVER_VERSION = "s1.2"
 
 app = FastAPI()
 app.add_middleware(
@@ -111,6 +112,10 @@ class Registry:
     def __init__(self):
         self._models: Dict[str, dict] = {}
         self._used: Dict[str, float] = {}
+        # Ladowanie modelu potrafi trwac minuty (pobranie wag + kwantyzacja).
+        # Bez zamka dwa rownolegle zapytania zaczynaja to samo ladowanie dwa
+        # razy i podwajaja szczyt zuzycia VRAM - na 8 GB karcie to OOM.
+        self._lock = threading.Lock()
 
     def vram_gb(self) -> float:
         return torch.cuda.memory_allocated() / (1024 ** 3) if DEVICE == "cuda" else 0.0
@@ -126,6 +131,9 @@ class Registry:
             self._used.pop(victim, None)
             torch.cuda.empty_cache()
 
+    def is_loaded(self, name: str) -> bool:
+        return name in self._models
+
     def get(self, name: str) -> dict:
         if name in self._models:
             self._used[name] = time.time()
@@ -135,13 +143,22 @@ class Registry:
         if loader is None:
             raise HTTPException(status_code=400, detail=f"Nieznany model: {name}")
 
-        print(f"[i] Ładuję model '{name}'...")
-        bundle = loader()
-        self._models[name] = bundle
-        self._used[name] = time.time()
-        self._evict_until(keep=name)
-        print(f"[+] '{name}' gotowy. VRAM: {self.vram_gb():.2f} GB")
-        return bundle
+        with self._lock:
+            # Ktos mogl zaladowac go, gdy czekalismy na zamek.
+            if name in self._models:
+                self._used[name] = time.time()
+                return self._models[name]
+
+            print(f"[i] Ładuję model '{name}'... (pierwszy raz pobiera wagi,"
+                  " to może potrwać kilka minut)")
+            t0 = time.time()
+            bundle = loader()
+            self._models[name] = bundle
+            self._used[name] = time.time()
+            self._evict_until(keep=name)
+            print(f"[+] '{name}' gotowy w {time.time() - t0:.0f}s."
+                  f" VRAM: {self.vram_gb():.2f} GB")
+            return bundle
 
 
 def load_clip() -> dict:
@@ -685,11 +702,50 @@ def solve_drag(req: SolveRequest) -> dict:
             "model": ROUTES["drag"]}
 
 
+# ── Rozgrzewka ──────────────────────────────────────────────────────────────
+# Modele MUSZA byc zaladowane, zanim przyjdzie pierwsze zapytanie. Leniwe
+# ladowanie dzialalo, dopoki najwiekszy model wazyl 1,7 GB - przy modelu
+# wizyjno-jezykowym pierwsze /solve wisialo dwie minuty na pobieraniu wag i
+# ginelo na limicie czasu po stronie bota. W logu wygladalo to jak "solver
+# nieosiagalny", czyli myllilo trop w strone sieci.
+WARMUP = {"done": False, "loading": None, "error": None}
+
+
+def _warmup():
+    for name in [ROUTES["drag"], ROUTES["grid"]]:
+        try:
+            WARMUP["loading"] = name
+            registry.get(name)
+        except Exception as e:  # noqa: BLE001
+            WARMUP["error"] = f"{name}: {type(e).__name__}: {e}"[:300]
+            print(f"[!] Rozgrzewka '{name}' nie powiodła się: {e}")
+    WARMUP["loading"] = None
+    WARMUP["done"] = True
+    print("[+] Rozgrzewka zakończona – solver gotowy na zapytania.")
+
+
+@app.on_event("startup")
+async def _on_start():
+    threading.Thread(target=_warmup, daemon=True).start()
+
+
+def _not_ready(kind: str) -> dict:
+    """Szybka, czytelna odmowa zamiast wiszacego zapytania."""
+    what = WARMUP["loading"] or "modele"
+    return _stamp({
+        "success": False, "kind": kind, "reason": "warming_up",
+        "detail": f"Solver wciąż ładuje '{what}' (pierwszy start pobiera wagi)."
+                  " Spróbuj ponownie za chwilę – to nie jest błąd wyzwania.",
+    })
+
+
 @app.get("/health")
 async def health():
     return {
         "ok": True,
         "version": SOLVER_VERSION,
+        "ready": WARMUP["done"] and not WARMUP["error"],
+        "warmup": {"loading": WARMUP["loading"], "error": WARMUP["error"]},
         "device": torch.cuda.get_device_name(0) if DEVICE == "cuda" else "CPU",
         "vram_gb": round(registry.vram_gb(), 2),
         "budget_gb": MAX_VRAM_GB,
@@ -713,6 +769,12 @@ async def solve(req: SolveRequest):
     # Kazdy blad backendu wraca jako czytelna odmowa, a nie gole 500.
     # Wczesniej niezlapany wyjatek (np. nieudane ladowanie modelu) docieral do
     # wolajacego jako "Internal Server Error" bez cienia informacji, co padlo.
+    # Zapytanie nie moze CZEKAC na zaladowanie modelu: bot ma wlasny limit
+    # czasu i zamiast "jeszcze sie laduje" zobaczylby "solver nieosiagalny".
+    want = ROUTES.get(kind)
+    if want and not registry.is_loaded(want):
+        return _not_ready(kind)
+
     try:
         if kind == "grid":
             return _stamp(await run_in_threadpool(solve_grid, req))

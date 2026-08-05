@@ -1099,10 +1099,16 @@ class Engine extends EventEmitter {
       });
       const body = await res.json().catch(() => null);
       const v = body && body.version;
-      this._log(acc, v
-        ? `── solver ${v} (${(body && body.device) || '?'})`
-        : '── solver ODPOWIADA, ALE BEZ WERSJI – to stary proces Pythona.'
+      if (!v) {
+        this._log(acc, '── solver ODPOWIADA, ALE BEZ WERSJI – to stary proces Pythona.'
           + ' Ubij okno "hCaptcha solver" i uruchom start.bat ponownie.');
+        return;
+      }
+      const w = (body && body.warmup) || {};
+      const stan = body.ready ? 'gotowy'
+        : (w.error ? `BŁĄD ROZGRZEWKI: ${w.error}`
+          : `ładuje '${w.loading || '?'}' – pierwszy start pobiera wagi`);
+      this._log(acc, `── solver ${v} (${(body && body.device) || '?'}) – ${stan}`);
     } catch (e) {
       this._log(acc, '── solver nieosiągalny na ' + SOLVER_URL
         + ' – rozwiązywanie CAPTCHA będzie niedostępne.');

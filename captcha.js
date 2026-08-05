@@ -28,7 +28,7 @@ const path = require('path');
 // require(), a solver.py chodzi w OSOBNYM procesie Pythona, ktorego Stop/Start
 // w panelu nie restartuje. Dwie diagnozy zostaly juz przez to postawione w
 // ciemno - numer wersji w logu konczy te klase watpliwosci raz na zawsze.
-const CAPTCHA_VERSION = 'c1.2';
+const CAPTCHA_VERSION = 'c1.3';
 
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
 const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
@@ -313,6 +313,13 @@ async function askSolver(payload, log) {
       + (typeof why === 'string' ? why : JSON.stringify(why).slice(0, 300)));
     return null;
   }
+  if (data && data.reason === 'warming_up') {
+    // Nie jest to odmowa merytoryczna - model jeszcze wstaje. Zapytanie NIE
+    // wisi juz do limitu czasu, wiec komunikat dociera od razu.
+    log(`[GPU-AI] Solver się rozgrzewa: ${data.detail || ''}`);
+    return null;
+  }
+
   if (!data || !data.success) {
     // Swiadoma odmowa - nie klikamy na oslep, bo spalona proba kosztuje wiecej.
     log(`[GPU-AI] Solver odmówił [${(data && data.kind) || '?'}]: `
@@ -921,10 +928,15 @@ async function solveCaptcha(context, challenge, log) {
       }
 
       log(`[GPU-AI] Runda ${round}/${MAX_ROUNDS}`);
-      // Gdy przelosowania sie skoncza, przestajemy wybrzydzac i probujemy
-      // rozwiazac to, co dostalismy - lepsza slaba proba niz zadna.
-      const status = await playRound(frame, log, page,
-        { allowPositional: rerolls >= MAX_REROLLS });
+      // Probujemy rozwiazac OD RAZU, bez wstepnego szukania innego wyzwania.
+      //
+      // Strategia "najpierw przelosuj na siatke obrazkow" zakladala, ze
+      // pominiecie rundy da inne zadanie. Zrzuty z czterech kolejnych rund
+      // pokazaly TO SAMO zdjecie - hCaptcha podaje wciaz to samo wyzwanie,
+      // wiec trzy pierwsze rundy szly w calosci na marne, a na faktyczna probe
+      // zostawala jedna. Odkad zadania pozycyjne obsluguje model wizyjno-
+      // jezykowy, nie ma tez po co ich unikac.
+      const status = await playRound(frame, log, page, { allowPositional: true });
 
       if ((status === 'brak-kafelkow' || status === 'pozycyjne') && rerolls < MAX_REROLLS) {
         rerolls++;
