@@ -103,17 +103,20 @@ REM ---------------------------------------------------------------------------
 REM Python is called `python` on most installs and `py` when only the Windows
 REM launcher is on PATH. Try both before giving up.
 :start_solver
+REM Zaleznosci solvera instalujemy w JEGO oknie, przed startem - inaczej brak
+REM jednego pakietu (np. bitsandbytes dla kwantyzacji 4-bit) objawia sie
+REM dopiero przy pierwszym wyzwaniu, jako "backend_error" w logu bota.
 python --version >nul 2>&1
 if not errorlevel 1 (
     echo [Solver] Starting solver.py in its own window...
-    start "hCaptcha solver" cmd /k python solver.py
+    start "hCaptcha solver" cmd /k "python -m pip install -q -r requirements.txt & python solver.py"
     echo.
     goto :eof
 )
 py --version >nul 2>&1
 if not errorlevel 1 (
     echo [Solver] Starting solver.py in its own window ^(py launcher^)...
-    start "hCaptcha solver" cmd /k py solver.py
+    start "hCaptcha solver" cmd /k "py -m pip install -q -r requirements.txt & py solver.py"
     echo.
     goto :eof
 )

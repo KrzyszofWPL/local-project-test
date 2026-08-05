@@ -1,0 +1,24 @@
+# Zaleznosci lokalnego solvera (solver.py). Instalacja:
+#     pip install -r requirements.txt
+#
+# torch instaluj OSOBNO i pod swoja karte - wersja z PyPI bywa bez CUDA,
+# a wtedy solver wstanie na CPU i kazde wyzwanie bedzie trwalo minuty:
+#     https://pytorch.org/get-started/locally/
+# Sprawdzenie: http://127.0.0.1:5000/health musi pokazac nazwe karty, nie "CPU".
+
+transformers>=4.49
+accelerate>=0.30
+pillow
+fastapi
+uvicorn
+einops
+timm
+
+# Qwen2.5-VL - model wizyjno-jezykowy dla zadan pozycyjnych (przeciaganie).
+# Detektor obiektow sie do nich nie nadaje: przy poleceniu wskazujacym PUSTE
+# miejsce ("the place where it fits") zwraca ramke na caly kadr.
+qwen-vl-utils
+
+# Kwantyzacja 4-bit. Wymagana na kartach ponizej ~12 GB VRAM (np. RTX 4060),
+# inaczej Qwen2.5-VL nie zmiesci sie obok CLIP-a.
+bitsandbytes

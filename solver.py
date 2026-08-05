@@ -4,28 +4,44 @@ Solver hCaptcha z routingiem na kilka modeli.
 Jeden proces, kilka wyspecjalizowanych modeli, ladowanych LENIWIE i zwalnianych,
 gdy zabraknie VRAM. Polecenie decyduje, ktory model odpowiada:
 
-    siatka obrazkow  ->  CLIP      (otwarty slownik, ~1,7 GB)
-    przeciaganie     ->  Florence-2 (grounding, zwraca wspolrzedne, ~1,5 GB)
-    obracanie        ->  Florence-2
+    siatka obrazkow  ->  CLIP         (otwarty slownik, ~1,7 GB)
+    przeciaganie     ->  Qwen2.5-VL   (wskazuje PUNKTY, nie ramki)
+    obracanie        ->  Qwen2.5-VL
     nierozpoznane    ->  ODMOWA (lepiej nic niz spalona proba)
 
-Na 8 GB VRAM oba modele mieszcza sie jednoczesnie (~3,2 GB), wiec przelaczanie
-nie kosztuje przeladowan.
+DLACZEGO NIE DETEKTOR OBIEKTOW DO PRZECIAGANIA
+
+Grounding DINO (i Florence-2) to detektory: dostaja fraze i szukaja RZECZY,
+ktora do niej pasuje. Zadanie "przeciagnij ikone w miejsce, gdzie pasuje"
+wymaga wskazania miejsca PUSTEGO - obiektu, ktorego tam z definicji nie ma.
+W logach wygladalo to zawsze tak samo: ramka obejmujaca 66-68% kadru, czyli
+"nie znalazlem niczego, wiec zwracam wszystko". Zadnym progiem sie tego nie
+naprawi, bo to nie jest kwestia czulosci, tylko tego, o co model potrafi zostac
+zapytany.
+
+Model wizyjno-jezykowy rozumuje o ukladzie sceny i podaje wspolrzedne punktu.
+Tak samo dziala referencyjna implementacja dla hCaptchy (hcaptcha-challenger:
+"Spatial Chain-of-Thought" dla image_drag_drop).
 
 Instalacja:
     pip install torch transformers pillow fastapi uvicorn einops timm
+    pip install -U accelerate qwen-vl-utils      # dla Qwen2.5-VL
+    pip install bitsandbytes                     # kwantyzacja 4-bit (karty <12 GB)
 Uruchomienie:
     python solver.py
 
 Konfiguracja przez zmienne srodowiskowe:
     MODEL_GRID=clip           model dla siatek
-    MODEL_DRAG=florence       model dla przeciagania
+    MODEL_DRAG=qwen           model dla przeciagania (dino = stare zachowanie)
+    QWEN_MODEL=...            domyslnie Qwen/Qwen2.5-VL-3B-Instruct
+    QWEN_4BIT=auto            auto|true|false - 'auto' wlacza 4-bit ponizej 12 GB
     MAX_VRAM_GB=7.0           budzet, po przekroczeniu zwalniany jest najdawniej
                               uzywany model
 """
 
 import base64
 import io
+import json
 import multiprocessing
 import os
 import re
@@ -44,7 +60,7 @@ from pydantic import BaseModel
 # restartowany przez Stop/Start w panelu - to osobny serwer uvicorn, ktory
 # trzeba ubic recznie. Bez numeru w logu nie da sie odroznic "poprawka nie
 # dziala" od "poprawka nie zostala zaladowana".
-SOLVER_VERSION = "s1.0"
+SOLVER_VERSION = "s1.1"
 
 app = FastAPI()
 app.add_middleware(
@@ -60,10 +76,27 @@ CLIP_ID = os.environ.get("CLIP_MODEL", "openai/clip-vit-large-patch14")
 FLORENCE_ID = os.environ.get("FLORENCE_MODEL", "microsoft/Florence-2-large")
 DINO_ID = os.environ.get("DINO_MODEL", "IDEA-Research/grounding-dino-base")
 
+# Model wizyjno-jezykowy dla zadan pozycyjnych. 3B miesci sie na 8 GB w fp16
+# na styk, wiec przy malej karcie wchodzi kwantyzacja 4-bit (patrz QWEN_4BIT).
+# Wieksze warianty: Qwen/Qwen2.5-VL-7B-Instruct (wymaga 4-bit na 8 GB).
+QWEN_ID = os.environ.get("QWEN_MODEL", "Qwen/Qwen2.5-VL-3B-Instruct")
+QWEN_4BIT = os.environ.get("QWEN_4BIT", "auto").lower()
+
 ROUTES = {
     "grid": os.environ.get("MODEL_GRID", "clip"),
-    "drag": os.environ.get("MODEL_DRAG", "dino"),
-    "rotate": os.environ.get("MODEL_ROTATE", "dino"),
+    # Detektor obiektow (DINO) jest do zadan pozycyjnych ZLYM narzedziem i
+    # zostalo to potwierdzone w boju: przy poleceniach opisujacych PUSTE
+    # miejsce ("the place where it fits", "the empty slot") zwracal ramke
+    # obejmujaca 66-68% kadru, czyli "nie znalazlem niczego". Detektor
+    # znajduje rzeczy obecne - a tu trzeba wskazac miejsce, w ktorym czegos
+    # NIE MA. Zadnym progiem sie tego nie naprawi.
+    #
+    # Model wizyjno-jezykowy rozumuje o scenie i potrafi wskazac PUNKT, nie
+    # tylko obrys obiektu. Tak samo robi to referencyjna implementacja dla
+    # hCaptchy (hcaptcha-challenger: "Spatial Chain-of-Thought" dla
+    # image_drag_drop). MODEL_DRAG=dino przywraca stare zachowanie.
+    "drag": os.environ.get("MODEL_DRAG", "qwen"),
+    "rotate": os.environ.get("MODEL_ROTATE", "qwen"),
 }
 
 print(f"=== Solver hCaptcha | urządzenie: {DEVICE} | budżet VRAM: {MAX_VRAM_GB} GB ===")
@@ -156,7 +189,68 @@ def load_dino() -> dict:
     return {"model": model, "proc": proc, "id": DINO_ID, "kind": "dino"}
 
 
-LOADERS = {"clip": load_clip, "florence": load_florence, "dino": load_dino}
+def load_qwen() -> dict:
+    """
+    Qwen2.5-VL: model wizyjno-jezykowy z natywnym wskazywaniem punktow.
+
+    Roznica wzgledem Grounding DINO jest zasadnicza, nie ilosciowa. DINO to
+    detektor obiektow otwartego slownika: dostaje fraze i szuka RZECZY, ktora
+    do niej pasuje. Zadanie "przeciagnij ikone w miejsce, gdzie pasuje" wymaga
+    wskazania PUSTEGO miejsca - obiektu, ktorego z definicji tam nie ma.
+    Detektor odpowiada wtedy ramka na caly kadr, co widac bylo w logach jako
+    "zajmuje 68% obrazu".
+
+    Model jezykowy rozumuje o ukladzie sceny: widzi luke w linii, widzi
+    element obok i potrafi podac wspolrzedne jednego i drugiego.
+
+    Instalacja (poza tym, co juz jest):
+        pip install -U transformers accelerate qwen-vl-utils
+        pip install bitsandbytes        # tylko dla kwantyzacji 4-bit
+    """
+    from transformers import AutoProcessor, Qwen2_5_VLForConditionalGeneration
+
+    kwargs = {"torch_dtype": DTYPE}
+
+    # 8 GB karta (RTX 4060) nie udzwignie 7B w fp16, a 3B miesci sie na styk.
+    # 'auto' wlacza 4-bit, gdy karta ma mniej niz 12 GB.
+    want4bit = QWEN_4BIT == "true"
+    if QWEN_4BIT == "auto" and DEVICE == "cuda":
+        try:
+            total = torch.cuda.get_device_properties(0).total_memory / (1024 ** 3)
+            want4bit = total < 12.0
+        except Exception:  # noqa: BLE001
+            want4bit = False
+
+    if want4bit:
+        try:
+            from transformers import BitsAndBytesConfig
+            kwargs["quantization_config"] = BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_compute_dtype=DTYPE,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_use_double_quant=True,
+            )
+            kwargs["device_map"] = "auto"
+            print("[i] Qwen2.5-VL w kwantyzacji 4-bit (mała karta).")
+        except Exception as e:  # noqa: BLE001
+            print(f"[!] Kwantyzacja 4-bit niedostępna ({e}) – ładuję w {DTYPE}."
+                  " Jeśli zabraknie VRAM: pip install bitsandbytes")
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(QWEN_ID, **kwargs)
+    if "device_map" not in kwargs:
+        model = model.to(DEVICE)
+    model = model.eval()
+
+    # Sufit rozdzielczosci: obszar wyzwania to ~500x470, wiec nie ma powodu
+    # placic za wiecej tokenow wizyjnych, a domyslny limit Qwena jest ogromny.
+    proc = AutoProcessor.from_pretrained(
+        QWEN_ID, min_pixels=256 * 28 * 28, max_pixels=1280 * 28 * 28)
+
+    return {"model": model, "proc": proc, "id": QWEN_ID, "kind": "vlm"}
+
+
+LOADERS = {"clip": load_clip, "florence": load_florence, "dino": load_dino,
+           "qwen": load_qwen}
 registry = Registry()
 
 
@@ -290,6 +384,88 @@ def ground(img: Image.Image, phrase: str) -> List[Tuple[Tuple[float, float, floa
 
 def center(box) -> Tuple[float, float]:
     return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
+
+
+# ── Backend: wskazywanie punktow modelem wizyjno-jezykowym ──────────────────
+
+# Polecenie celowo zada SAMEGO JSON-a. Krotki tok rozumowania podnosi jakosc,
+# ale rozwleklej odpowiedzi nie da sie niezawodnie sparsowac, a zla odpowiedz
+# kosztuje wiecej niz odmowa. Model dostaje wymiary obrazu, bo Qwen operuje na
+# wspolrzednych BEZWZGLEDNYCH, nie znormalizowanych.
+VLM_PROMPT = (
+    "This is a CAPTCHA puzzle image, {w} by {h} pixels.\n"
+    "Instruction shown to the user: \"{task}\"\n\n"
+    "Find exactly two locations:\n"
+    "  \"from\" = the centre of the movable element that must be dragged\n"
+    "  \"to\"   = the exact spot where that element belongs once placed\n\n"
+    "The \"to\" location is usually EMPTY - a gap, a slot or a hole. "
+    "Give its centre even though nothing is drawn there.\n\n"
+    "Reply with ONLY this JSON and nothing else:\n"
+    "{{\"from\": [x, y], \"to\": [x, y]}}\n"
+    "Use absolute pixel coordinates in this image."
+)
+
+
+def _extract_json(text: str) -> Optional[dict]:
+    """Ostatni obiekt JSON w odpowiedzi - model lubi dokleic komentarz."""
+    best = None
+    for m in re.finditer(r"\{[^{}]*\}", text or "", re.S):
+        try:
+            best = json.loads(m.group(0))
+        except Exception:  # noqa: BLE001
+            continue
+    return best if isinstance(best, dict) else None
+
+
+def _pt(v, w: int, h: int) -> Optional[Tuple[float, float]]:
+    if not isinstance(v, (list, tuple)) or len(v) < 2:
+        return None
+    try:
+        x, y = float(v[0]), float(v[1])
+    except Exception:  # noqa: BLE001
+        return None
+    # Model bywa proszony o piksele, ale czasem odpowiada 0..1 albo 0..1000.
+    # Rozpoznajemy skale po zakresie, zamiast ufac instrukcji.
+    if 0.0 <= x <= 1.0 and 0.0 <= y <= 1.0:
+        x, y = x * w, y * h
+    elif x > w or y > h:
+        if x <= 1000 and y <= 1000:
+            x, y = x / 1000.0 * w, y / 1000.0 * h
+    return (max(0.0, min(float(w), x)), max(0.0, min(float(h), y)))
+
+
+@torch.inference_mode()
+def vlm_drag_points(img: Image.Image, task: str):
+    """Zwraca ((x1,y1),(x2,y2)) w pikselach albo None."""
+    b = registry.get(ROUTES["drag"])
+    w, h = img.size
+
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": img},
+            {"type": "text", "text": VLM_PROMPT.format(w=w, h=h, task=task)},
+        ],
+    }]
+    text = b["proc"].apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    inputs = b["proc"](text=[text], images=[img], return_tensors="pt")
+    inputs = {k: v.to(b["model"].device) for k, v in inputs.items()}
+
+    out = b["model"].generate(**inputs, max_new_tokens=128, do_sample=False)
+    trimmed = out[0][inputs["input_ids"].shape[1]:]
+    raw = b["proc"].decode(trimmed, skip_special_tokens=True)
+
+    data = _extract_json(raw)
+    if not data:
+        print(f"[!] VLM nie zwrócił JSON-a: {raw[:200]!r}")
+        return None
+    a = _pt(data.get("from"), w, h)
+    c = _pt(data.get("to"), w, h)
+    if a is None or c is None:
+        print(f"[!] VLM zwrócił niepełne punkty: {data!r}")
+        return None
+    return a, c
 
 
 def box_area_ratio(box, w: int, h: int) -> float:
@@ -430,6 +606,26 @@ def solve_drag(req: SolveRequest) -> dict:
 
     img = decode_image(req.image_data)
     w, h = img.size
+
+    # Sciezka modelu wizyjno-jezykowego: pytamy wprost o DWA PUNKTY, zamiast
+    # kazac detektorowi szukac obiektu w miejscu, ktore jest puste z zalozenia.
+    # Kontrole ponizej (dystans, granice) zostaja te same - to nadal jest
+    # odpowiedz do zweryfikowania, nie wyrocznia.
+    if registry.get(ROUTES["drag"]).get("kind") == "vlm":
+        pts = vlm_drag_points(img, req.prompt or "")
+        if not pts:
+            return {"success": False, "kind": "drag", "reason": "not_grounded",
+                    "detail": "Model wizyjno-językowy nie wskazał dwóch punktów"}
+        (ax, ay), (bx, by) = pts
+        frm = [round(ax / w, 4), round(ay / h, 4)]
+        to = [round(bx / w, 4), round(by / h, 4)]
+        travel = ((frm[0] - to[0]) ** 2 + (frm[1] - to[1]) ** 2) ** 0.5
+        if travel < MIN_TRAVEL:
+            return {"success": False, "kind": "drag", "reason": "degenerate",
+                    "detail": f"Źródło i cel w tym samym miejscu (dystans {travel:.3f})"}
+        return {"success": True, "kind": "drag", "action": "drag",
+                "from": frm, "to": to, "confidence": "medium",
+                "model": ROUTES["drag"]}
 
     src_phrases, tgt_phrases = drag_phrases(req.prompt)
     src = best_box(img, src_phrases)
