@@ -61,7 +61,7 @@ from pydantic import BaseModel
 # restartowany przez Stop/Start w panelu - to osobny serwer uvicorn, ktory
 # trzeba ubic recznie. Bez numeru w logu nie da sie odroznic "poprawka nie
 # dziala" od "poprawka nie zostala zaladowana".
-SOLVER_VERSION = "s1.2"
+SOLVER_VERSION = "s1.3"
 
 app = FastAPI()
 app.add_middleware(
@@ -423,6 +423,101 @@ VLM_PROMPT = (
 )
 
 
+# Siatki, ktorych CLIP z zasady nie rozwiaze.
+#
+# CLIP porownuje PODOBIENSTWO obrazu do opisu. Nie rozumie relacji ("co zmiesci
+# sie w tym naczyniu"), nie umie porownac kafelka ze WZORCEM pokazanym obok
+# polecenia i nie wnioskuje o przeznaczeniu ani rozmiarze.
+#
+# Przyklad z boju: "Click on items that can fit inside the object shown", gdzie
+# wzorcem byla miska w banerze polecenia. extract_target() nie mial z czego
+# wyciagnac rzeczownika i zwrocil cala fraze "that can fit inside the object
+# shown". CLIP liczyl wtedy podobienstwo kafelkow do zdania bez tresci
+# wizualnej, wiec wskazania byly losowe: obok czosnku (poprawnie) zaznaczyl
+# kanapy i pralki. Sam WZORZEC - miska - nigdy nie trafial do modelu, bo
+# zrzucalismy wylacznie kafelki.
+SEMANTIC_MARKERS = re.compile(
+    r"\bshown\b|\bexample\b|\babove\b|\bpictured\b"
+    r"|\bfits?\s+(?:in|inside|into)\b|\bfit\s+inside\b"
+    r"|\bsame\b|\bsimilar\b|\bmatch(?:es|ing)?\b|\bpair\b"
+    r"|\bbelongs?\b|\bused\s+(?:for|to)\b|\bmade\s+(?:of|from)\b"
+    r"|\bthat\s+can\b|\bwhich\s+can\b|\bcan\s+be\b",
+    re.I)
+
+
+def needs_reasoning(prompt: str, target: Optional[str]) -> bool:
+    """
+    Czy siatka wymaga rozumowania, a nie samego podobienstwa.
+
+    Zasada, nie lista fraz: CLIP dostaje polecenia, ktore NAZYWAJA obiekt
+    ("bicycle", "primarily metal"), a model wizyjno-jezykowy te, ktore opisuja
+    go zdaniem podrzednym ("animal THAT emerges from an egg", "items THAT can
+    fit inside the object shown"). Zdanie podrzedne oznacza wlasnosc, relacje
+    albo wiedze o swiecie - a CLIP mierzy wylacznie podobienstwo obrazu do
+    opisu i takiego warunku nie sprawdzi.
+
+    Podzial ma tez znaczenie praktyczne: CLIP odpowiada w ulamku sekundy,
+    model wizyjno-jezykowy w kilka sekund. Prostych siatek nie ma po co
+    przepuszczac przez ten drugi.
+    """
+    if not target:
+        return True
+    if SEMANTIC_MARKERS.search(prompt or ""):
+        return True
+    return bool(re.search(r"\b(?:that|which|who|whose)\b", target, re.I))
+
+
+GRID_VLM_PROMPT = (
+    "This image is a CAPTCHA panel, {w} by {h} pixels.\n"
+    "It shows an instruction at the top (sometimes together with a small "
+    "reference picture), and below it a grid of {n} tiles.\n\n"
+    "Instruction: \"{task}\"\n\n"
+    "Tiles are numbered starting at 0, left to right, then top to bottom.\n"
+    "Decide which tiles satisfy the instruction. Think about what the "
+    "instruction actually asks - it may refer to the reference picture, to "
+    "physical size, or to what an object is used for.\n\n"
+    "Reply with ONLY this JSON and nothing else:\n"
+    "{{\"click\": [0, 3]}}\n"
+    "Use an empty list if no tile satisfies the instruction."
+)
+
+
+@torch.inference_mode()
+def vlm_grid_picks(img: Image.Image, task: str, n: int) -> Optional[List[int]]:
+    b = registry.get(ROUTES["drag"])   # ten sam model wizyjno-jezykowy
+    w, h = img.size
+
+    messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image", "image": img},
+            {"type": "text", "text": GRID_VLM_PROMPT.format(w=w, h=h, task=task, n=n)},
+        ],
+    }]
+    text = b["proc"].apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True)
+    inputs = b["proc"](text=[text], images=[img], return_tensors="pt")
+    inputs = {k: v.to(b["model"].device) for k, v in inputs.items()}
+
+    out = b["model"].generate(**inputs, max_new_tokens=128, do_sample=False)
+    raw = b["proc"].decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+
+    data = _extract_json(raw)
+    if not data or not isinstance(data.get("click"), list):
+        print(f"[!] VLM (siatka) nie zwrócił JSON-a: {raw[:200]!r}")
+        return None
+
+    picks = []
+    for v in data["click"]:
+        try:
+            i = int(v)
+        except Exception:  # noqa: BLE001
+            continue
+        if 0 <= i < n and i not in picks:
+            picks.append(i)
+    return picks
+
+
 def _extract_json(text: str) -> Optional[dict]:
     """Ostatni obiekt JSON w odpowiedzi - model lubi dokleic komentarz."""
     best = None
@@ -503,6 +598,9 @@ class SolveRequest(BaseModel):
     # Zadania pozycyjne: jeden zrzut obszaru wyzwania.
     image_data: Optional[str] = None
     grid: str = "3x3"
+    # Ile kafelkow naprawde jest na panelu. Model wizyjno-jezykowy indeksuje po
+    # nich, wiec musi znac liczbe - inaczej zdarza mu sie zgadywac 9.
+    tile_count: Optional[int] = None
     threshold: float = 0.55
     # Wymuszenie typu, gdy wolajacy juz go zna.
     kind: Optional[str] = None
@@ -518,6 +616,32 @@ def grid_size(grid: str) -> Tuple[int, int]:
 
 def solve_grid(req: SolveRequest) -> dict:
     target = extract_target(req.prompt)
+
+    # Siatka relacyjna/semantyczna idzie do modelu wizyjno-jezykowego, i to na
+    # PELNYM zrzucie panelu - bo wzorzec, do ktorego odnosi sie polecenie
+    # ("the object shown"), jest narysowany OBOK polecenia, a nie w kafelkach.
+    # Wysylanie samych kafelkow gwarantowalo bledna odpowiedz: model nie mial
+    # jak zobaczyc, o jaki obiekt chodzi.
+    if needs_reasoning(req.prompt, target):
+        if not req.image_data:
+            return {"success": False, "kind": "grid", "reason": "no_image",
+                    "detail": "Siatka semantyczna wymaga zrzutu całego panelu"
+                              " (wzorzec bywa obok polecenia, nie w kafelkach)",
+                    "click_indices": []}
+        vlm = ROUTES["drag"]
+        if not registry.is_loaded(vlm):
+            return _not_ready("grid")
+
+        n = req.tile_count or (len(req.tiles) if req.tiles else 9)
+        picks = vlm_grid_picks(decode_image(req.image_data), req.prompt or "", n)
+        if picks is None:
+            return {"success": False, "kind": "grid", "reason": "not_grounded",
+                    "detail": "Model wizyjno-językowy nie wskazał kafelków",
+                    "click_indices": []}
+        return {"success": True, "kind": "grid", "action": "click", "mode": "vlm",
+                "target": target or "(relacja)", "click_indices": picks,
+                "model": vlm}
+
     if not target:
         return {"success": False, "kind": "grid", "reason": "unparsable_prompt",
                 "detail": f"Nie wyciągnąłem celu z: \"{req.prompt}\"", "click_indices": []}

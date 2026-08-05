@@ -28,7 +28,7 @@ const path = require('path');
 // require(), a solver.py chodzi w OSOBNYM procesie Pythona, ktorego Stop/Start
 // w panelu nie restartuje. Dwie diagnozy zostaly juz przez to postawione w
 // ciemno - numer wersji w logu konczy te klase watpliwosci raz na zawsze.
-const CAPTCHA_VERSION = 'c1.3';
+const CAPTCHA_VERSION = 'c1.4';
 
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
 const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
@@ -729,6 +729,24 @@ async function playRound(frame, log, page, opts) {
     tiles.push('data:image/png;base64,' + shot.toString('base64'));
   }
 
+  // Zrzut CALEGO panelu, obok kafelkow. Czesc polecen odnosi sie do WZORCA
+  // narysowanego przy tresci zadania ("items that can fit inside the object
+  // shown" - obok stoi obrazek miski). Wysylajac same kafelki, odcinalismy
+  // modelowi jedyna informacje o tym, o jaki obiekt chodzi, i odpowiedz nie
+  // miala prawa byc trafna. Solver uzywa tego zrzutu tylko dla siatek
+  // wymagajacych rozumowania; przy zwyklym "select all X" liczy sie szybki
+  // CLIP na samych kafelkach.
+  let panel = null;
+  try {
+    const area = await challengeArea(frame);
+    if (area) {
+      const shot = await area.loc.screenshot({ timeout: 10000, animations: 'disabled' });
+      panel = 'data:image/png;base64,' + shot.toString('base64');
+    }
+  } catch (e) {
+    log(`[GPU-AI] Nie udało się zrzucić całego panelu: ${(e && e.message) || e}`);
+  }
+
   // Ta sama pulapka co przy zadaniach pozycyjnych: puste kafelki oznaczaja, ze
   // ramka nie zostala namalowana, a nie ze model sie myli.
   //
@@ -747,7 +765,10 @@ async function playRound(frame, log, page, opts) {
   }
   log(`[GPU-AI] Zrzucono ${tiles.length} kafelków, wysyłam do GPU...`);
 
-  const answer = await askSolver({ prompt: prompt, kind: 'grid', tiles: tiles }, log);
+  const answer = await askSolver({
+    prompt: prompt, kind: 'grid', tiles: tiles,
+    tile_count: count, image_data: panel,
+  }, log);
   if (!answer) return 'solver-odmowil';
 
   const picks = Array.isArray(answer.click_indices) ? answer.click_indices : [];
