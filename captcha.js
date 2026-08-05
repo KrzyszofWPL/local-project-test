@@ -28,7 +28,7 @@ const path = require('path');
 // require(), a solver.py chodzi w OSOBNYM procesie Pythona, ktorego Stop/Start
 // w panelu nie restartuje. Dwie diagnozy zostaly juz przez to postawione w
 // ciemno - numer wersji w logu konczy te klase watpliwosci raz na zawsze.
-const CAPTCHA_VERSION = 'c1.0';
+const CAPTCHA_VERSION = 'c1.1';
 
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
 const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
@@ -182,7 +182,10 @@ async function tileLocator(frame) {
 // zrzut ekranu na dysk.
 async function dumpState(page, log, tag) {
   const frames = page.frames();
-  log(`[GPU-AI] Diagnostyka (${tag}): ramek=${frames.length}`);
+  const fails = (page && page.__questNetFail) || [];
+  log(`[GPU-AI] Diagnostyka (${tag}): ramek=${frames.length}`
+    + `, nieudanych żądań do hcaptcha.com: ${fails.length}`
+    + (fails.length ? ` [${fails.slice(0, 6).join('; ')}]` : ''));
   for (const f of frames) {
     let info;
     try {
@@ -785,6 +788,37 @@ async function solveCaptcha(context, challenge, log) {
     page = await context.newPage();
     page.setDefaultTimeout(20000);
 
+    // ── Diagnostyka sieci wyzwania ────────────────────────────────────────
+    // Na zrzucie debugowym panel hCaptchy renderuje sie w calosci - polecenie,
+    // stopka, przyciski - a obszar kafelkow zostaje PUSTY. Skoro dokument
+    // ramki dochodzi, a grafika nie, to problem jest na poziomie pojedynczych
+    // zadan sieciowych, nie renderowania. Obrazki zadan leca z innego hosta
+    // (imgs.hcaptcha.com) niz sam widget (newassets.hcaptcha.com) i ida przez
+    // ten sam mostek SOCKS5, ktory dla serii rownoleglych polaczen bywa waskim
+    // gardlem.
+    //
+    // Bez tego licznika "model dostal bialy obrazek" i "obrazek nigdy nie
+    // przyszedl" wygladaja w logu IDENTYCZNIE - a to zupelnie inne usterki.
+    const netFail = [];
+    page.on('requestfailed', (req) => {
+      try {
+        const u = req.url();
+        if (u.indexOf('hcaptcha.com') === -1) return;
+        const why = (req.failure() && req.failure().errorText) || '?';
+        netFail.push(`${req.resourceType()} ${why}`);
+        log(`[GPU-AI] SIEĆ ✗ ${req.resourceType()} ${why} – ${u.slice(0, 110)}`);
+      } catch (_) {}
+    });
+    page.on('response', (res) => {
+      try {
+        const u = res.url();
+        if (u.indexOf('hcaptcha.com') === -1 || res.status() < 400) return;
+        netFail.push(`HTTP ${res.status()}`);
+        log(`[GPU-AI] SIEĆ ✗ HTTP ${res.status()} – ${u.slice(0, 110)}`);
+      } catch (_) {}
+    });
+    page.__questNetFail = netFail;
+
     // Karta MUSI byc aktywna. Strona konta zostaje otwarta obok, wiec bez tego
     // strona wyzwania jest kartą w tle: document.visibilityState = 'hidden',
     // a Chromium potrafi wtedy nie kompozytowac cross-originowej ramki
@@ -860,6 +894,16 @@ async function solveCaptcha(context, challenge, log) {
 
       // Konto pracuje na sasiedniej karcie i moze ja w miedzyczasie przejac.
       await page.bringToFront().catch(() => {});
+
+      // Zrzut ZANIM czegokolwiek dotkniemy. Dotad `dumpState` odpalal sie
+      // wylacznie po bledzie, a hCaptcha przy bledzie czysci kafelki i zostawia
+      // sam szkielet panelu z napisem "Please try again" - czyli KAZDY zrzut,
+      // jaki mielismy, pokazywal stan PO awarii. Z takiego obrazu nie da sie
+      // orzec, czy grafika nigdy nie przyszla, czy zostala usunieta razem z
+      // wyzwaniem. To sa zupelnie rozne usterki i prowadza w przeciwne strony.
+      if (process.env.CAPTCHA_DEBUG_SHOTS !== 'false') {
+        await dumpState(page, log, `runda${round}-przed-dotknieciem`);
+      }
 
       log(`[GPU-AI] Runda ${round}/${MAX_ROUNDS}`);
       // Gdy przelosowania sie skoncza, przestajemy wybrzydzac i probujemy
