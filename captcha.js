@@ -28,7 +28,7 @@ const path = require('path');
 // require(), a solver.py chodzi w OSOBNYM procesie Pythona, ktorego Stop/Start
 // w panelu nie restartuje. Dwie diagnozy zostaly juz przez to postawione w
 // ciemno - numer wersji w logu konczy te klase watpliwosci raz na zawsze.
-const CAPTCHA_VERSION = 'c1.1';
+const CAPTCHA_VERSION = 'c1.2';
 
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
 const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
@@ -195,6 +195,21 @@ async function dumpState(page, log, tag) {
         prompt: document.querySelectorAll('.prompt-text').length,
         img: document.querySelectorAll('img').length,
         iframe: document.querySelectorAll('iframe').length,
+        // Zadania pozycyjne nie maja ani .task-image, ani <img> - w logu
+        // wygladalo to jak "ramka jest pusta", a to po prostu INNA forma
+        // zadania. Bez policzenia canvasow (i sprawdzenia, czy cokolwiek na
+        // nich narysowano) nie da sie odroznic "wyzwanie sie nie narysowalo"
+        // od "wyzwanie jest, tylko w innej technice".
+        canvas: document.querySelectorAll('canvas').length,
+        svg: document.querySelectorAll('svg').length,
+        canvasPx: (function () {
+          var out = [];
+          var cs = document.querySelectorAll('canvas');
+          for (var i = 0; i < cs.length && i < 4; i++) {
+            out.push(cs[i].width + 'x' + cs[i].height);
+          }
+          return out.join(',');
+        })(),
         txt: (document.body ? document.body.innerText : '').slice(0, 60).replace(/\s+/g, ' '),
         // Nazwy klas elementow, ktore WYGLADAJA na klikalne kafelki: obrazki
         // albo divy z tlem graficznym. Bez tego zgadujemy selektory w ciemno.
