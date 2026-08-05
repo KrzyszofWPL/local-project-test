@@ -44,6 +44,10 @@ const CAPTCHA_LANG = process.env.CAPTCHA_LANG || 'en';
 const MIN_AREA_SHOT_BYTES = parseInt(process.env.CAPTCHA_MIN_SHOT_BYTES || '3000', 10);
 const MIN_TILE_SHOT_BYTES = parseInt(process.env.CAPTCHA_MIN_TILE_BYTES || '900', 10);
 
+// Ile kafelkow moze wyjsc pusto, zanim uznamy siatke za niezdatna do wyslania.
+// 1/3 to jeden rzad siatki 3x3 - powyzej tego odpowiedz i tak byla zgadywanka.
+const MAX_BLANK_TILE_RATIO = parseFloat(process.env.CAPTCHA_MAX_BLANK_RATIO || '0.34');
+
 function pageHtml(sitekey, rqdata) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>verify</title></head>
 <body style="background:#1a1a1e">
@@ -89,7 +93,22 @@ function pageHtml(sitekey, rqdata) {
 // Ramka z wyzwaniem (siatka obrazkow) - hCaptcha trzyma osobna ramke na
 // checkbox i osobna na samo wyzwanie. Interesuje nas ta druga.
 // Klasy w ramce hCaptcha bywaja zmieniane, wiec nie opieramy sie na jednej.
-const TILE_SELECTORS = '.task-image, .image-wrapper, [class*="task-image"], [class*="challenge"] .image';
+//
+// UWAGA: to MUSI byc lista prob, a nie jeden selektor z przecinkami. W DOM
+// hCaptchy `.image-wrapper` siedzi WEWNATRZ `.task-image`, wiec lista alternatyw
+// trafia w te sama kratke na dwoch poziomach zagniezdzenia: `count()` zwracalo
+// 18 zamiast 9, a tablica zrzutow byla przeplatana [kafelek0, wrapper0,
+// kafelek1, wrapper1…]. Model dostawal kazdy obrazek dwa razy, w dwoch roznych
+// kadrach - raz z ramka i nakladka, raz bez.
+const TILE_SELECTOR_CANDIDATES = [
+  '.task-image',
+  '[class*="task-image"]',
+  '.image-wrapper',
+  '[class*="challenge"] .image',
+];
+// Sam selektor listowy zostaje do wykrywania ramki wyzwania, gdzie liczy sie
+// tylko "czy cokolwiek jest", a nie ile tego jest.
+const TILE_SELECTORS = TILE_SELECTOR_CANDIDATES.join(', ');
 const PROMPT_SELECTORS = '.prompt-text, [class*="prompt-text"], .challenge-prompt';
 
 // Obszar samego zadania - kolejnosc MA znaczenie, od najwezszego do najszerszego.
@@ -136,6 +155,20 @@ async function challengeArea(frame) {
   return null;
 }
 
+// Kafelki siatki - pierwszy kandydat, ktory cokolwiek lapie, wygrywa. Nie
+// laczymy kandydatow przecinkami, bo zagniezdzaja sie w sobie (patrz komentarz
+// przy TILE_SELECTOR_CANDIDATES): liczylibysmy te sama kratke wielokrotnie.
+async function tileLocator(frame) {
+  for (const sel of TILE_SELECTOR_CANDIDATES) {
+    try {
+      const loc = frame.locator(sel);
+      const count = await loc.count();
+      if (count) return { loc, count, sel };
+    } catch (_) {}
+  }
+  return { loc: frame.locator(TILE_SELECTOR_CANDIDATES[0]), count: 0, sel: null };
+}
+
 // Gdy ramka wyzwania sie nie znajduje, jedyne co pomaga to zobaczyc, co
 // naprawde jest na stronie: lista ramek z liczba elementow kandydatow oraz
 // zrzut ekranu na dysk.
@@ -171,7 +204,13 @@ async function dumpState(page, log, tag) {
     const dir = path.join(__dirname, 'captcha-debug');
     fs.mkdirSync(dir, { recursive: true });
     const file = path.join(dir, `${Date.now()}-${tag}.png`);
-    await page.screenshot({ path: file, fullPage: true });
+    // BEZ fullPage. Wyzwanie hCaptchy w trybie `size:'invisible'` to nakladka
+    // `position: fixed` z ramka cross-origin (OOPIF) w srodku. Chromium sklada
+    // zrzut calej strony z kolejnych przewiniec, a elementy `fixed` i OOPIF-y
+    // nie trafiaja do kadrow poza pierwszym - dostawalismy PNG w rozmiarze
+    // calego dokumentu, w ktorym captcha byla ucieta albo zostawal z niej sam
+    // gorny pas. Zwykly zrzut viewportu lapie nakladke w calosci.
+    await page.screenshot({ path: file, animations: 'disabled' });
     log(`[GPU-AI] Zrzut ekranu: ${file}`);
   } catch (e) {
     log(`[GPU-AI] Nie udało się zrobić zrzutu: ${(e && e.message) || e}`);
@@ -183,13 +222,17 @@ async function dumpState(page, log, tag) {
 // tylko pojawia sie elementy kafelkow, wiec bez tego czekania zrzucalismy
 // PUSTE ramki: panel z bialym srodkiem, dokladnie jak na zrzucie z debugu.
 // Kafelki hCaptchy noszą grafike jako background-image, nie jako <img>.
-async function waitForChallengeImages(frame, log, ms) {
+//
+// `sel` musi byc TYM SAMYM selektorem, ktory wybral `tileLocator()` - inaczej
+// czekamy na inny zbior elementow niz ten, ktory potem zrzucamy. Przy ksztalcie
+// DOM lapanym dopiero przez ostatniego kandydata stala lista nie znajdowala
+// niczego i funkcja konczyla sie timeoutem mimo zaladowanej grafiki.
+async function waitForChallengeImages(frame, log, ms, sel) {
   const deadline = Date.now() + (ms || 15000);
   let last = -1;
   while (Date.now() < deadline) {
-    const stat = await frame.evaluate(() => {
-      const sel = '.task-image, .image-wrapper, [class*="task-image"]';
-      const els = Array.from(document.querySelectorAll(sel));
+    const stat = await frame.evaluate((tileSel) => {
+      const els = Array.from(document.querySelectorAll(tileSel));
       let loaded = 0;
       for (const el of els) {
         const inner = el.querySelector('.image') || el;
@@ -199,7 +242,7 @@ async function waitForChallengeImages(frame, log, ms) {
       // Zadania pozycyjne nie maja kafelkow - tam patrzymy na canvas/obrazki.
       const canvas = document.querySelectorAll('canvas, .challenge-view img').length;
       return { total: els.length, loaded: loaded, canvas: canvas };
-    }).catch(() => null);
+    }, sel || TILE_SELECTORS).catch(() => null);
 
     if (!stat) return false;
     if (stat.total && stat.loaded >= stat.total) return true;
@@ -396,8 +439,8 @@ async function playRound(frame, log, page, opts) {
   const kind = classifyChallenge(prompt);
   log(`[GPU-AI] Zadanie [${kind}]: "${prompt}"`);
 
-  const tileLoc = frame.locator(TILE_SELECTORS);
-  const count = await tileLoc.count();
+  const { loc: tileLoc, count, sel: tileSel } = await tileLocator(frame);
+  if (count) log(`[GPU-AI] Kafelki: ${count} (selektor ${tileSel})`);
 
   // Zadania pozycyjne (przeciaganie, obracanie) nie maja kafelkow - wysylamy
   // zrzut calego obszaru wyzwania i dostajemy wspolrzedne zamiast indeksow.
@@ -426,9 +469,19 @@ async function playRound(frame, log, page, opts) {
 
     // Zrzut PRZED pomiarem: screenshot() przewija element do widoku, wiec
     // prostokat musi pochodzic z tego samego stanu strony co obrazek.
-    await waitForChallengeImages(frame, log);
+    //
+    // Zwrotka NIE moze byc ignorowana: `false` znaczy, ze minal timeout i czesc
+    // grafiki wciaz sie nie doladowala. Wczesniej szlismy dalej mimo to i model
+    // dostawal niepelny obraz - a przez proxy SOCKS5 to nie jest rzadki
+    // przypadek brzegowy, tylko norma przy wolnym lączu.
+    if (!(await waitForChallengeImages(frame, log, null, tileSel))) {
+      log('[GPU-AI] Grafika wyzwania niekompletna po timeoucie'
+        + ' - nie wysyłam uciętego obrazu do modelu.');
+      if (page) await dumpState(page, log, 'niepelna-grafika');
+      return 'niepelna-grafika';
+    }
 
-    const shot = await area.loc.screenshot({ timeout: 10000 });
+    const shot = await area.loc.screenshot({ timeout: 10000, animations: 'disabled' });
 
     // Ramka hCaptchy jest cross-origin, wiec Chromium renderuje ja w osobnym
     // procesie (OOPIF). W trybie headless, gdy strona nie jest na wierzchu,
@@ -450,6 +503,21 @@ async function playRound(frame, log, page, opts) {
       return 'brak-kafelkow';
     }
     log(`[GPU-AI] Obszar zadania: ${area.sel} ${Math.round(box.width)}×${Math.round(box.height)}`);
+
+    // Playwright nie dorysuje pikseli spoza prostokata, jaki <iframe> hCaptchy
+    // zajmuje w dokumencie rodzica - to OOPIF, jego zawartosc konczy sie na
+    // krawedzi ramki. Jesli obszar zadania jest wyzszy/szerszy niz sama ramka,
+    // zrzut jest UCIETY, a wspolrzedne przeciagniecia licza sie wzgledem
+    // prostokata, ktorego model nigdy w calosci nie zobaczyl.
+    try {
+      const el = await frame.frameElement();
+      const fbox = await el.boundingBox();
+      if (fbox && (box.width - fbox.width > 2 || box.height - fbox.height > 2)) {
+        log(`[GPU-AI] UWAGA: obszar zadania (${Math.round(box.width)}×`
+          + `${Math.round(box.height)}) wystaje poza ramkę (${Math.round(fbox.width)}×`
+          + `${Math.round(fbox.height)}) - zrzut jest ucięty na krawędzi iframe.`);
+      }
+    } catch (_) {}
 
     const answer = await askSolver({
       prompt: prompt,
@@ -488,21 +556,33 @@ async function playRound(frame, log, page, opts) {
       + ' - próbuję mimo to.');
   }
 
-  await waitForChallengeImages(frame, log);
+  // Jak wyzej: `false` = timeout i niedoladowana grafika. Zrzucanie "co jest"
+  // konczylo sie wysylaniem do modelu siatki z szarymi dziurami.
+  if (!(await waitForChallengeImages(frame, log, null, tileSel))) {
+    log('[GPU-AI] Grafika kafelków niekompletna po timeoucie'
+      + ' - nie wysyłam uciętej siatki do modelu.');
+    if (page) await dumpState(page, log, 'niepelna-grafika');
+    return 'niepelna-grafika';
+  }
 
   const tiles = [];
   let blankTiles = 0;
   for (let i = 0; i < count; i++) {
-    const shot = await tileLoc.nth(i).screenshot({ timeout: 10000 });
+    const shot = await tileLoc.nth(i).screenshot({ timeout: 10000, animations: 'disabled' });
     if (shot.length < MIN_TILE_SHOT_BYTES) blankTiles++;
     tiles.push('data:image/png;base64,' + shot.toString('base64'));
   }
 
   // Ta sama pulapka co przy zadaniach pozycyjnych: puste kafelki oznaczaja, ze
   // ramka nie zostala namalowana, a nie ze model sie myli.
-  if (blankTiles === count) {
-    log(`[GPU-AI] Wszystkie ${count} kafelków to puste obrazki - ramka hCaptcha`
-      + ' nie została namalowana. Nie wysyłam ich do modelu.');
+  //
+  // Prog, nie warunek "wszystkie": przy czesciowo namalowanej ramce model
+  // dostawal komplet indeksow, z ktorych czesc byla szarymi prostokatami, i
+  // typowal z tego, co widzial. Odpowiedz z polowa siatki zgadnietej w ciemno
+  // spala runde tak samo jak brak odpowiedzi, a dodatkowo podnosi ocene ryzyka.
+  if (blankTiles >= Math.max(1, Math.ceil(count * MAX_BLANK_TILE_RATIO))) {
+    log(`[GPU-AI] ${blankTiles}/${count} kafelków to puste obrazki - ramka hCaptcha`
+      + ' nie została namalowana w całości. Nie wysyłam niepełnej siatki do modelu.');
     if (page) await dumpState(page, log, 'puste-kafelki');
     return 'pusty-zrzut';
   }
@@ -659,6 +739,21 @@ async function solveCaptcha(context, challenge, log) {
         // ale przy zadaniu pozycyjnym sprobujmy je chociaz rozwiazac.
         if (status !== 'pozycyjne') return null;
         rerolls = MAX_REROLLS;
+        continue;
+      }
+
+      // Niedoladowana grafika to stan PRZEJSCIOWY, w odroznieniu od ramki, ktora
+      // w ogole nie zostaje namalowana. Dajemy jej kolejna runde - obrazki maja
+      // wtedy tyle czasu, ile trwa jedno okrazenie petli - zamiast konczyc caly
+      // przebieg i marnowac wyzwanie, ktore za chwile bedzie kompletne.
+      if (status === 'niepelna-grafika') {
+        if (round >= MAX_ROUNDS) {
+          log('[GPU-AI] Grafika wyzwania nie doładowała się do końca'
+            + ` w ${MAX_ROUNDS} rundach - przerywam.`);
+          return null;
+        }
+        log('[GPU-AI] Grafika niekompletna - czekam i próbuję jeszcze raz.');
+        await page.waitForTimeout(3000);
         continue;
       }
 
