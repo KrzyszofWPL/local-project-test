@@ -92,6 +92,23 @@ function _apply(fp) {
     try { Object.defineProperty(obj, prop, { get: getter, configurable: true }); } catch (_) {}
   };
 
+  // navigator.webdriver === true przy sterowaniu przez CDP. To najprostszy i
+  // najstarszy sygnal automatu, jaki istnieje, i NIC go w tym projekcie nie
+  // zdejmowalo - hCaptcha rozpoznawala bota, zanim zobaczyla jakakolwiek
+  // odpowiedz. Argument --disable-blink-features=AutomationControlled zdejmuje
+  // go u zrodla; to druga linia obrony, gdyby build ustawil go mimo wszystko.
+  //
+  // Kasujemy wlasciwosc z prototypu zamiast podmieniac getter: w prawdziwym
+  // Chrome `webdriver` istnieje i zwraca false, ale nadpisany getter zostawia
+  // slad w deskryptorze, wiec usuniecie jest blizsze oryginalowi. Getter
+  // zwracajacy false zostaje jako zapasowy wariant, gdy delete nie zadziala.
+  try {
+    if ('webdriver' in Navigator.prototype) delete Navigator.prototype.webdriver;
+  } catch (_) {}
+  try {
+    if (navigator.webdriver) def(Navigator.prototype, 'webdriver', () => false);
+  } catch (_) {}
+
   def(Navigator.prototype, 'hardwareConcurrency', () => fp.hardwareConcurrency);
   def(Navigator.prototype, 'deviceMemory', () => fp.deviceMemory);
   def(Navigator.prototype, 'platform', () => fp.platform);

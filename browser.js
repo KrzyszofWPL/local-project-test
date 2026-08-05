@@ -409,11 +409,17 @@ async function main() {
       ? (process.env.CHROMIUM_CHANNEL || undefined)
       : 'chromium',
     proxy: proxyList.length ? { server: 'http://per-context' } : undefined,
+    ignoreDefaultArgs: ['--enable-automation'],
     args: [
+      // Patrz komentarz w engine.js: navigator.webdriver to najprostszy sygnal
+      // automatu, a --disable-gpu wymusza SwiftShader, ktory sam zdradza
+      // headless. Sciezka CLI musi trzymac te same ustawienia co panel, inaczej
+      // to samo konto wyglada inaczej zaleznie od sposobu uruchomienia.
+      '--disable-blink-features=AutomationControlled',
       '--no-sandbox',
       '--disable-setuid-sandbox',
       '--disable-dev-shm-usage',
-      '--disable-gpu',
+      ...(process.env.GPU_DISABLE === 'true' ? ['--disable-gpu'] : []),
       '--no-first-run',
       '--no-zygote',
       '--disable-background-networking',

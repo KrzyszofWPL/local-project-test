@@ -698,13 +698,33 @@ class Engine extends EventEmitter {
       viewport: fp.viewport,
       screen: fp.screen,
       deviceScaleFactor: fp.deviceScaleFactor,
+      // `navigator.webdriver === true` to najprostszy i najstarszy sygnal
+      // automatu, jaki istnieje - Chromium ustawia go sam, gdy sterowany jest
+      // przez CDP. Nic w tym projekcie go nie zdejmowalo, wiec hCaptcha widziala
+      // bota ZANIM cokolwiek kliknelismy. To spina wszystkie obserwacje z logow:
+      // same zadania z najtrudniejszej rodziny (nigdy siatka obrazkow) i
+      // `challenge-error` po KAZDEJ interakcji - takze po nieszkodliwym
+      // pominieciu rundy, ktore nie moglo byc "zla odpowiedzia".
+      //
+      // --disable-blink-features=AutomationControlled zdejmuje flage na poziomie
+      // Blinka; lata w initScript() dokladaja obrone na wypadek, gdyby build
+      // ustawil ja mimo to.
+      ignoreDefaultArgs: ['--enable-automation'],
       args: [
+        '--disable-blink-features=AutomationControlled',
         '--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--no-first-run', '--disable-background-networking',
+        '--no-first-run', '--disable-background-networking',
         '--disable-default-apps', '--disable-extensions', '--disable-sync',
         '--disable-background-timer-throttling',
         '--disable-backgrounding-occluded-windows',
         '--disable-renderer-backgrounding',
+        // --disable-gpu USUNIETE. Bez GPU WebGL renderuje SwiftShader, co samo
+        // w sobie jest sygnalem headless, a do tego klocilo sie z powodem, dla
+        // ktorego przelaczylismy sie na channel:'chromium' - kompozycja ramek
+        // cross-origin (OOPIF) wymaga pelnego potoku graficznego.
+        // GPU_DISABLE=true przywraca stare zachowanie, gdyby maszyna go nie
+        // miala i Chromium nie wstawal.
+        ...(process.env.GPU_DISABLE === 'true' ? ['--disable-gpu'] : []),
         ...(proxy ? WEBRTC_ARGS : []),
       ],
     };
@@ -1137,9 +1157,16 @@ class Engine extends EventEmitter {
       case 'version':
         acc.injectVersion = ev.version;
         // Rozjazd wersji = strona dostala inny inject.js niz ten na dysku.
-        if (ev.version !== ENGINE_VERSION) {
-          this._log(acc, `UWAGA: inject ${ev.version} vs engine ${ENGINE_VERSION}`
-            + ' – zrestartuj proces node, require() trzyma stary skrypt w cache.');
+        //
+        // Porownanie idzie do INJECT_VERSION (wyczytanej z pliku), a NIE do
+        // ENGINE_VERSION. To dwa niezalezne numery: engine i inject wersjonuja
+        // sie osobno, wiec zestawianie ich ze soba dawalo ostrzezenie o
+        // "starym cache" za kazdym razem, gdy podniesiono tylko jeden z nich -
+        // czyli alarm odpalal sie wtedy, gdy wszystko bylo w porzadku.
+        if (ev.version !== INJECT_VERSION) {
+          this._log(acc, `UWAGA: strona dostała inject ${ev.version}, a na dysku`
+            + ` jest ${INJECT_VERSION} – zrestartuj proces node,`
+            + ' require() trzyma stary skrypt w cache.');
         }
         this.emit('update');
         break;

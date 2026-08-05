@@ -267,6 +267,23 @@ function restoreProxies() {
     assert.strictEqual(order[1][1], false, 'zatrzymane konto kończy się wynikiem negatywnym');
   });
 
+  await test('przeglądarka nie zdradza, że jest sterowana', async () => {
+    const { initScript, fingerprintFor } = require('./fingerprint.js');
+    const script = initScript(fingerprintFor('aaaa1111bbbb2222'));
+    assert.ok(/webdriver/.test(script),
+      'init-script musi zdejmować navigator.webdriver');
+
+    // Obie sciezki uruchomienia (panel i CLI) musza dawac ten sam odcisk -
+    // inaczej to samo konto wyglada inaczej zaleznie od sposobu startu.
+    for (const f of ['engine.js', 'browser.js']) {
+      const src = fs.readFileSync(path.join(__dirname, f), 'utf-8');
+      assert.ok(/--disable-blink-features=AutomationControlled/.test(src),
+        `${f}: brak flagi zdejmującej AutomationControlled`);
+      assert.ok(!/^\s*'--disable-gpu',\s*$/m.test(src),
+        `${f}: --disable-gpu bezwarunkowo wymusza SwiftShader, co zdradza headless`);
+    }
+  });
+
   await test('rozwiązana captcha wraca w nagłówkach, nie w ciele żądania', async () => {
     const src = fs.readFileSync(path.join(__dirname, 'inject.js'), 'utf-8');
 
