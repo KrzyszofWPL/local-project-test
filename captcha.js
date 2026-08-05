@@ -301,6 +301,29 @@ async function askSolver(payload, log) {
 // Przeciagniecie wewnatrz ramki. Solver zwraca wspolrzedne znormalizowane
 // 0..1 wzgledem przeslanego zrzutu, wiec przeliczamy je na piksele strony
 // przez prostokat elementu, ktory zrzucalismy.
+// Klikniecie prawdziwa myszą, z dojsciem do celu. Playwright potrafi kliknac
+// element sam, ale robi to teleportem kursora - a brak trajektorii dojscia to
+// jeden z sygnalow, po ktorych hCaptcha rozpoznaje automat. Celujemy w losowy
+// punkt w poblizu srodka, nie zawsze dokladnie w srodek.
+async function humanClick(page, box) {
+  const tx = box.x + box.width / 2 + (Math.random() - 0.5) * Math.min(10, box.width * 0.3);
+  const ty = box.y + box.height / 2 + (Math.random() - 0.5) * Math.min(10, box.height * 0.3);
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+  const from = { x: tx - 30 - Math.random() * 70, y: ty - 25 - Math.random() * 60 };
+  await page.mouse.move(from.x, from.y);
+  const steps = 9 + Math.floor(Math.random() * 6);
+  for (let i = 1; i <= steps; i++) {
+    const t = ease(i / steps);
+    await page.mouse.move(from.x + (tx - from.x) * t, from.y + (ty - from.y) * t);
+    await page.waitForTimeout(7 + Math.random() * 15);
+  }
+  await page.waitForTimeout(50 + Math.random() * 110);
+  await page.mouse.down();
+  await page.waitForTimeout(45 + Math.random() * 85);
+  await page.mouse.up();
+}
+
 async function performDrag(page, box, from, to, log) {
   // Model potrafi zwrocic wartosc spoza 0..1 (ramka wystajaca poza obrazek).
   // Bez przyciecia kursor wyjezdza poza obszar zadania, hCaptcha gubi wskaznik
@@ -315,15 +338,64 @@ async function performDrag(page, box, from, to, log) {
   log(`[GPU-AI] Przeciągam (${Math.round(a.x)},${Math.round(a.y)})`
     + ` → (${Math.round(b.x)},${Math.round(b.y)})`);
 
-  await page.mouse.move(a.x, a.y);
-  await page.mouse.down();
-  // Kilka posrednich krokow - skok w jednej klatce wyglada nienaturalnie.
-  const steps = 18;
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    await page.mouse.move(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
-    await page.waitForTimeout(15 + Math.random() * 25);
+  // hCaptcha punktuje SAM RUCH, nie tylko punkt koncowy: bada m.in. brak
+  // laczenia zdarzen pointer (prawdziwa mysz daje kilka probek sprzetowych na
+  // klatke, ruch wstrzykniety przez CDP jedna), spojnosc movementX/Y z delta
+  // pozycji oraz klikniecia bez trajektorii dojscia. Poprzednia wersja
+  // teleportowala kursor na start i jechala 18 krokami po prostej ze stalym
+  // tempem - wzorzec, ktory takie kontrole wylapuja wprost.
+  //
+  // Nizej: dojscie do zrodla z biezacej pozycji, krzywa Beziera zamiast
+  // odcinka, przyspieszenie i wyhamowanie (easing), przestrzelenie z korekta
+  // oraz pauzy wokol wcisniecia i puszczenia przycisku.
+  const jitter = (v) => v + (Math.random() - 0.5) * 2;
+
+  // Punkt kontrolny z boku odcinka - im dluzszy gest, tym wieksze wybrzuszenie.
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const dist = Math.hypot(dx, dy) || 1;
+  const bow = Math.min(60, dist * 0.22) * (Math.random() < 0.5 ? -1 : 1);
+  const ctrl = {
+    x: (a.x + b.x) / 2 - (dy / dist) * bow,
+    y: (a.y + b.y) / 2 + (dx / dist) * bow,
+  };
+  const bezier = (p0, p1, p2, t) => {
+    const u = 1 - t;
+    return {
+      x: u * u * p0.x + 2 * u * t * p1.x + t * t * p2.x,
+      y: u * u * p0.y + 2 * u * t * p1.y + t * t * p2.y,
+    };
+  };
+  // Wolno-szybko-wolno. Bez tego predkosc jest stala, czego ludzka reka nie robi.
+  const ease = (t) => (t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2);
+
+  // Dojscie do zrodla - kursor ma miec skad przyjechac.
+  const approach = { x: a.x - 40 - Math.random() * 60, y: a.y - 30 - Math.random() * 50 };
+  await page.mouse.move(approach.x, approach.y);
+  for (let i = 1; i <= 8; i++) {
+    const t = ease(i / 8);
+    await page.mouse.move(approach.x + (a.x - approach.x) * t,
+                          approach.y + (a.y - approach.y) * t);
+    await page.waitForTimeout(8 + Math.random() * 14);
   }
+
+  await page.waitForTimeout(90 + Math.random() * 140);
+  await page.mouse.down();
+  await page.waitForTimeout(60 + Math.random() * 90);
+
+  const steps = 22 + Math.floor(Math.random() * 12);
+  for (let i = 1; i <= steps; i++) {
+    const p = bezier(a, ctrl, b, ease(i / steps));
+    await page.mouse.move(jitter(p.x), jitter(p.y));
+    await page.waitForTimeout(10 + Math.random() * 22);
+  }
+
+  // Przestrzelenie i korekta - ludzka reka rzadko zatrzymuje sie od razu w celu.
+  await page.mouse.move(b.x + (Math.random() - 0.5) * 7, b.y + (Math.random() - 0.5) * 7);
+  await page.waitForTimeout(40 + Math.random() * 70);
+  await page.mouse.move(b.x, b.y);
+
+  await page.waitForTimeout(110 + Math.random() * 160);
   await page.mouse.up();
   await page.waitForTimeout(600);
 }
@@ -370,10 +442,25 @@ async function reroll(frame, log) {
     // Bierzemy pierwszy WIDOCZNY, a nie pierwszy w drzewie. `.first()` trafialo
     // w egzemplarz ukryty (hCaptcha trzyma zapasowe kopie kontrolek), przez co
     // klikniecie konczylo sie "element is not visible" po 5 s czekania.
+    //
+    // `isVisible()` to jednak za waskie kryterium: zwraca false takze dla
+    // przycisku, ktory MA prostokat i da sie w niego trafic myszą, a jest tylko
+    // przezroczysty albo przykryty warstwa animacji. W logach wygladalo to jak
+    // "znaleziono 1, zaden nie jest widoczny" - i przelosowanie nigdy nie
+    // dochodzilo do skutku, wiec bot za kazdym razem wracal do tego samego,
+    // nierozwiazywalnego zadania. Kryterium jest teraz PROSTOKAT: jesli element
+    // zajmuje miejsce na ekranie, klikamy w jego srodek prawdziwa myszą.
     for (let i = 0; i < n; i++) {
       const el = all.nth(i);
-      if (!(await el.isVisible().catch(() => false))) continue;
-      await el.click({ timeout: 5000 });
+      const visible = await el.isVisible().catch(() => false);
+      const box = await el.boundingBox().catch(() => null);
+      if (!visible && !(box && box.width > 2 && box.height > 2)) continue;
+
+      if (box) {
+        await humanClick(frame.page(), box);
+      } else {
+        await el.click({ timeout: 5000 });
+      }
       await frame.page().waitForTimeout(2000);
       return true;
     }
@@ -404,9 +491,12 @@ async function clickSubmit(frame, log) {
   }
   for (let i = 0; i < n; i++) {
     const el = all.nth(i);
-    if (!(await el.isVisible().catch(() => false))) continue;
+    const visible = await el.isVisible().catch(() => false);
+    const box = await el.boundingBox().catch(() => null);
+    if (!visible && !(box && box.width > 2 && box.height > 2)) continue;
     try {
-      await el.click({ timeout: 5000 });
+      if (box) await humanClick(frame.page(), box);
+      else await el.click({ timeout: 5000 });
       return true;
     } catch (e) {
       log(`[GPU-AI] Kliknięcie zatwierdzenia nie powiodło się: ${(e && e.message) || e}`);
@@ -608,7 +698,11 @@ async function playRound(frame, log, page, opts) {
   for (const idx of picks) {
     if (idx < 0 || idx >= count) continue;
     try {
-      await tileLoc.nth(idx).click({ timeout: 5000 });
+      // Prawdziwa mysz z dojsciem zamiast teleportu Playwrighta - hCaptcha
+      // bada trajektorie kursora, nie tylko to, ze klikniecie doszlo.
+      const box = await tileLoc.nth(idx).boundingBox().catch(() => null);
+      if (box) await humanClick(frame.page(), box);
+      else await tileLoc.nth(idx).click({ timeout: 5000 });
       clicked++;
     } catch (e) {
       failed.push(idx);

@@ -4,6 +4,8 @@ const assert = require('assert');
 
 const TOKENS = path.join(__dirname, 'tokens.txt');
 const BACKUP = path.join(__dirname, 'tokens.txt.testbak');
+const IPS = path.join(__dirname, 'ip.txt');
+const IP_BACKUP = path.join(__dirname, 'ip.txt.testbak');
 
 let passed = 0, failed = 0;
 
@@ -32,9 +34,26 @@ function restoreTokens() {
   }
 }
 
+// ip.txt jest w .gitignore, wiec na swiezym klonie go nie ma. Bez wlasnych
+// danych test przypisania proxy konczylby sie wyjsciem na starcie - czyli
+// przechodzilby, nie sprawdziwszy niczego.
+function setupProxies() {
+  if (fs.existsSync(IPS) && !fs.existsSync(IP_BACKUP)) fs.copyFileSync(IPS, IP_BACKUP);
+  fs.writeFileSync(IPS, 'socks5://10.0.0.1:1080\nsocks5://10.0.0.2:1080\n');
+}
+function restoreProxies() {
+  if (fs.existsSync(IP_BACKUP)) {
+    fs.copyFileSync(IP_BACKUP, IPS);
+    fs.unlinkSync(IP_BACKUP);
+  } else {
+    try { fs.unlinkSync(IPS); } catch (_) {}
+  }
+}
+
 (async () => {
   console.log('\nTesty regresji\n');
   setupTokens();
+  setupProxies();
 
   const { Engine } = require('./engine.js');
 
@@ -253,14 +272,46 @@ function restoreTokens() {
     assert.ok(src.includes('launchPersistentContext'),
       'kontekst musi być trwały, żeby cookies i IndexedDB przetrwały restart');
     const inner = src.match(/async _runInner\(acc\)[\s\S]*?\n  \}/)[0];
-    assert.ok(/hadSession/.test(inner),
+    // Sonda sesji: wejscie na strone zalogowana i sprawdzenie, czy Discord
+    // odbija na /login. Poprzednio bylo to pytanie o window.localStorage, ale
+    // Discord kasuje ten obiekt ze strony, wiec odpowiedz brzmiala "brak sesji"
+    // niemal zawsze i token szedl przy KAZDYM uruchomieniu.
+    assert.ok(/bouncedToLogin/.test(inner),
       'przy istniejącej sesji nie wolno ponownie wstrzykiwać tokenu');
     // Token wstrzykiwany jest tylko w gałęzi "brak sesji" – sprawdzenie sesji
     // musi poprzedzać wywołanie _injectToken.
-    assert.ok(inner.indexOf('hadSession') < inner.indexOf('_injectToken'),
+    assert.ok(inner.indexOf('bouncedToLogin') < inner.indexOf('_injectToken'),
       'sprawdzenie sesji musi poprzedzać wstrzyknięcie tokenu');
     assert.ok(/\/login/.test(inner) && /_injectToken/.test(inner),
       'wygasła sesja musi mieć zapasowe logowanie tokenem');
+    // Komentarze odpadaja: blok TLUMACZY, czemu nie czytamy localStorage,
+    // wiec samo slowo w tekscie nie jest naruszeniem - liczy sie kod.
+    const code = inner.replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/localStorage/.test(code),
+      'wykrywanie sesji nie może opierać się na window.localStorage – Discord go usuwa');
+    assert.ok(/_restoreSession/.test(src) && /addCookies/.test(src),
+      'ciasteczka z zapisanej sesji muszą wracać do kontekstu');
+  });
+
+  await test('proxy jest przypisane do tokenu na stałe, nie do numeru linii', async () => {
+    const e = new Engine();
+    if (!e.proxyList.proxies.length) return;   // brak ip.txt – nie ma czego wiązać
+
+    const before = e.accounts.map(a => a.proxy && a.proxy.label);
+    assert.ok(before[0], 'konto musi dostać proxy');
+
+    // Restart aplikacji: nowy Engine czyta przypisania z state.json.
+    const e2 = new Engine();
+    assert.deepStrictEqual(e2.accounts.map(a => a.proxy && a.proxy.label), before,
+      'po restarcie konto musi wychodzić z tego samego proxy');
+
+    // Zamiana kolejności w tokens.txt nie może przenieść proxy na inne konto.
+    fs.writeFileSync(TOKENS, 'cccc3333dddd4444\naaaa1111bbbb2222\n');
+    e2.loadTokens();
+    assert.strictEqual(e2.accounts[0].proxy && e2.accounts[0].proxy.label, before[1],
+      'po zamianie kolejności proxy musi iść za tokenem');
+    assert.strictEqual(e2.accounts[1].proxy && e2.accounts[1].proxy.label, before[0]);
+    fs.writeFileSync(TOKENS, 'aaaa1111bbbb2222\ncccc3333dddd4444\n');
   });
 
   await test('profil przeglądarki jest przypisany do tokenu, nie do numeru linii', async () => {
@@ -369,11 +420,13 @@ function restoreTokens() {
   });
 
   restoreTokens();
+  restoreProxies();
 
   console.log(`\n${passed} zaliczonych, ${failed} niezaliczonych\n`);
   process.exit(failed > 0 ? 1 : 0);
 })().catch(e => {
   restoreTokens();
+  restoreProxies();
   console.error('Błąd testów:', e);
   process.exit(1);
 });

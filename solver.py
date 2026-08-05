@@ -285,6 +285,15 @@ def center(box) -> Tuple[float, float]:
     return ((box[0] + box[2]) / 2.0, (box[1] + box[3]) / 2.0)
 
 
+def box_area_ratio(box, w: int, h: int) -> float:
+    """Jaka czesc obrazu zajmuje ramka. 1.0 = caly obraz."""
+    if not w or not h:
+        return 1.0
+    bw = max(0.0, box[2] - box[0])
+    bh = max(0.0, box[3] - box[1])
+    return (bw * bh) / float(w * h)
+
+
 # ── Kontrakt HTTP ───────────────────────────────────────────────────────────
 
 class SolveRequest(BaseModel):
@@ -370,6 +379,11 @@ PURPOSE_VERBS = (
 MIN_SCORE = float(os.environ.get("DRAG_MIN_SCORE", "0.30"))
 MIN_TRAVEL = float(os.environ.get("DRAG_MIN_TRAVEL", "0.03"))
 
+# Powyzej tego udzialu powierzchni ramka przestaje byc wskazaniem miejsca.
+# 0.6 przepuszcza duze obiekty (segment linii bywa rozlegly), a odrzuca
+# uziemienie na calym kadrze.
+MAX_BOX_RATIO = float(os.environ.get("DRAG_MAX_BOX_RATIO", "0.60"))
+
 
 def _clean_phrase(s: str) -> str:
     s = re.sub(r"\s+", " ", (s or "")).strip(" .!?:;\"'")
@@ -423,6 +437,25 @@ def solve_drag(req: SolveRequest) -> dict:
         return {"success": False, "kind": "drag", "reason": "low_confidence",
                 "detail": f"Najlepsze uziemienie {score:.2f} < próg {MIN_SCORE:.2f} "
                           f"(źródło: \"{src[2]}\", cel: \"{tgt[2]}\")"}
+
+    # Ramka obejmujaca (prawie) caly obraz to nie detekcja, tylko kapitulacja
+    # modelu: detektor obiektow nie znalazl niczego i zwrocil wszystko. Srodek
+    # takiej ramki wypada w (0.5, 0.5), czyli w martwym srodku obrazka.
+    #
+    # Kontrola `travel` nizej lapie to TYLKO gdy zdegenerowane sa OBIE ramki.
+    # Gdy degeneruje sie sam cel - a przy frazach opisujacych puste miejsce
+    # ("the empty slot", "the place where it fits") to przypadek typowy, bo
+    # grounding znajduje rzeczy obecne, nie ich brak - dystans wychodzi duzy,
+    # walidacja przepuszcza i przeciagamy element na srodek obrazu. hCaptcha
+    # odpowiada na to `challenge-error` i wyzwanie jest spalone.
+    for label, det in (("źródło", src), ("cel", tgt)):
+        ratio = box_area_ratio(det[0], w, h)
+        if ratio > MAX_BOX_RATIO:
+            return {"success": False, "kind": "drag", "reason": "not_grounded",
+                    "detail": f"Ramka dla \"{det[2]}\" ({label}) zajmuje "
+                              f"{ratio * 100:.0f}% obrazu (próg "
+                              f"{MAX_BOX_RATIO * 100:.0f}%) - model nie wskazał "
+                              f"konkretnego miejsca, tylko całość"}
 
     a, b = center(src[0]), center(tgt[0])
     frm = [round(a[0] / w, 4), round(a[1] / h, 4)]

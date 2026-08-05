@@ -79,13 +79,27 @@ function toDesktopSuperProperties(originalB64) {
 
 const ANSI = new RegExp(String.fromCharCode(27) + '\\[[0-9;]*m', 'g');
 
+// Stabilny identyfikator konta. Numer linii w tokens.txt sie do tego nie nadaje:
+// dopisanie albo usuniecie jednego wiersza przesuwa wszystkie ponizej. Sluzy i
+// za nazwe katalogu profilu, i za klucz przypisania proxy.
+function tokenKey(token) {
+  return crypto.createHash('sha256').update(String(token).trim()).digest('hex').slice(0, 16);
+}
+
 // Browser profiles used to live in profiles/<line number>, so deleting or
 // reordering a line in tokens.txt silently gave an account another account's
 // cookies – logged in as one user while presenting a second user's session
 // through a third user's proxy. Key them by the token instead.
 function profileDirFor(token) {
-  return path.join(PROFILES_DIR,
-    crypto.createHash('sha256').update(String(token).trim()).digest('hex').slice(0, 16));
+  return path.join(PROFILES_DIR, tokenKey(token));
+}
+
+// Tozsamosc proxy do zapamietania. NIE uzywamy `proxy.server`, bo zawiera
+// schemat, a ten bywa dopiero wykrywany ('auto' -> socks5) - ten sam wpis
+// mialby wtedy dwa rozne klucze przed i po detekcji.
+function proxyKey(proxy) {
+  if (!proxy) return null;
+  return `${proxy.host}:${proxy.port}|${proxy.username || ''}`;
 }
 
 // One-time move of the old index-named directories onto token-based names. Only
@@ -164,11 +178,15 @@ class Engine extends EventEmitter {
       const s = JSON.parse(fs.readFileSync(STATE_FILE, 'utf-8'));
       this.totals = { questsCompleted: 0, orbsEarned: 0, ...s.totals };
       this._history = s.history ?? {};
+      // Trwale przypisanie konto -> proxy. Bez tego kazdy restart mogl
+      // wystawic konto z innego adresu.
+      this._proxyBindings = s.proxyBindings ?? {};
       if (s.settings && s.settings.defaultProxyScheme) {
         this.defaultProxyScheme = normalizeScheme(s.settings.defaultProxyScheme);
       }
     } catch (_) {
       this._history = {};
+      this._proxyBindings = {};
     }
   }
 
@@ -177,6 +195,7 @@ class Engine extends EventEmitter {
       fs.writeFileSync(STATE_FILE, JSON.stringify({
         totals: this.totals,
         history: this._history,
+        proxyBindings: this._proxyBindings || {},
         settings: { defaultProxyScheme: this.defaultProxyScheme },
       }, null, 2));
     } catch (_) {}
@@ -239,17 +258,72 @@ class Engine extends EventEmitter {
     this.emit('update');
   }
 
+  // Proxy jest przypiete do KONTA (po skrocie tokenu), nie do numeru linii.
+  //
+  // Wczesniej bylo `list[i % list.length]`, czyli wiazanie po pozycji w
+  // tokens.txt. Dopisanie tokenu, usuniecie wpisu z ip.txt albo zmiana ich
+  // kolejnosci przestawialy cala liste: konto, ktore wczoraj wychodzilo z
+  // jednego adresu, dzis logowalo sie z innego. Dla Discorda i dla hCaptchy
+  // wyglada to jak przejecie sesji - profil ma ciasteczka z jednego kraju,
+  // a polaczenie przychodzi z drugiego.
+  //
+  // Przypisania sa trwale: leza w state.json i przezywaja restart aplikacji.
   _assignProxies() {
     const list = this.proxyList.proxies;
     const on = this.useProxies && list.length > 0;
-    this.accounts.forEach((acc, i) => {
-      const next = on ? list[i % list.length] : null
+
+    if (!this._proxyBindings) this._proxyBindings = {};
+    const byKey = new Map(list.map(p => [proxyKey(p), p]));
+    const usage = new Map(list.map(p => [proxyKey(p), 0]));
+    let dirty = false;
+
+    // Najpierw honorujemy istniejace przypisania - dopiero wolne konta dostaja
+    // cokolwiek nowego, zeby dolozenie konta nie ruszalo pozostalych.
+    const resolved = new Map();
+    if (on) {
+      for (const acc of this.accounts) {
+        const bound = this._proxyBindings[tokenKey(acc.token)];
+        const proxy = bound ? byKey.get(bound) : null;
+        if (proxy) {
+          resolved.set(acc.id, proxy);
+          usage.set(bound, (usage.get(bound) || 0) + 1);
+        }
+      }
+
+      // Konta bez przypisania (nowe) albo z proxy, ktorego juz nie ma w ip.txt,
+      // dostaja najmniej obciazony wpis - i to przypisanie tez zapisujemy.
+      for (const acc of this.accounts) {
+        if (resolved.has(acc.id)) continue;
+        let bestKey = null;
+        let bestUse = Infinity;
+        for (const p of list) {
+          const k = proxyKey(p);
+          const u = usage.get(k) || 0;
+          if (u < bestUse) { bestUse = u; bestKey = k; }
+        }
+        if (bestKey == null) continue;
+        const key = tokenKey(acc.token);
+        if (this._proxyBindings[key] && this._proxyBindings[key] !== bestKey) {
+          this._log(acc, `Proxy ${this._proxyBindings[key]} zniknęło z ip.txt`
+            + ` – przypisuję ${bestKey}`);
+        }
+        this._proxyBindings[key] = bestKey;
+        dirty = true;
+        resolved.set(acc.id, byKey.get(bestKey));
+        usage.set(bestKey, bestUse + 1);
+      }
+    }
+
+    this.accounts.forEach((acc) => {
+      const next = on ? (resolved.get(acc.id) || null) : null;
       if (!acc.proxy || !next || acc.proxy.server !== next.server) {
         acc.proxyIp = null;
         acc.proxyError = null;
       }
       acc.proxy = next;
     });
+
+    if (dirty) this._saveState();
   }
 
   setUseProxies(v) {
@@ -793,6 +867,8 @@ class Engine extends EventEmitter {
     const context = await this._openProfile(acc, proxy, profileDir);
     acc._context = context;
 
+    await this._restoreSession(acc, context, profileDir);
+
     // Rozwiazywanie captchy zyje na WLASNEJ stronie w tym samym kontekscie i
     // trwa dziesiatki sekund. Blok finally ponizej zamyka kontekst, wiec bez
     // tego rejestru kazde zakonczenie glownego evaluate - takze awaryjne, np.
@@ -863,32 +939,36 @@ class Engine extends EventEmitter {
 
       this._push(acc, { status: 'running', message: 'Opening Discord…' });
 
-      await page.goto('https://discord.com/login', { waitUntil: 'domcontentloaded' });
-
-      // Reuse the stored session when the profile still holds one; only fall
-      // back to the raw token when there is nothing to resume.
-      const hadSession = await page.evaluate(() => {
-        try { return !!(window.localStorage && window.localStorage.getItem('token')); }
-        catch (_) { return false; }
-      });
-
-      if (hadSession) {
-        this._log(acc, 'Resuming the saved session from this profile (no token login)');
-      } else {
-        this._log(acc, 'No stored session in this profile – signing in with the token once');
-        await this._injectToken(page, acc.token);
-      }
-
+      // Wchodzimy OD RAZU na strone zalogowana i patrzymy, czy Discord nas
+      // stamtad wyrzuci. To jedyny wiarygodny test posiadania sesji.
+      //
+      // Wczesniej szlismy na /login i pytalismy o window.localStorage. Discord
+      // KASUJE ten obiekt ze strony (utrudnia czytanie tokenu), wiec odczyt
+      // niemal zawsze zwracal false - a wtedy kod wstrzykiwal surowy token przy
+      // KAZDYM uruchomieniu, mimo ze profil mial wazna sesje. Logowanie tokenem
+      // to dla Discorda zdarzenie "nowe urzadzenie"; robione co restart podnosi
+      // ocene ryzyka konta i sciaga wlasnie te captche, z ktorymi walczymy.
       this._push(acc, { message: 'Loading Discord…' });
       await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
 
-      // A resumed session can be expired – Discord then bounces back to /login.
-      // Detect that and log in with the token once, rather than silently sitting
-      // on the login page and reporting "no quests".
-      if (hadSession && /\/login/.test(page.url())) {
-        this._log(acc, 'Saved session has expired – signing in with the token');
+      const bouncedToLogin = async () => {
+        // Przekierowanie na /login robi aplikacja po starcie, czyli PO
+        // domcontentloaded - trzeba dac mu chwile, zanim uznamy sesje za wazna.
+        for (let i = 0; i < 20; i++) {
+          if (/\/login/.test(page.url())) return true;
+          await page.waitForTimeout(500);
+        }
+        return /\/login/.test(page.url());
+      };
+
+      if (await bouncedToLogin()) {
+        this._log(acc, 'Brak ważnej sesji w profilu – jednorazowe logowanie tokenem');
         await this._injectToken(page, acc.token);
         await page.goto('https://discord.com/channels/@me', { waitUntil: 'domcontentloaded' });
+      } else {
+        const jar = await context.cookies('https://discord.com').catch(() => []);
+        this._log(acc, `Wznawiam zapisaną sesję z profilu (${jar.length} ciasteczek,`
+          + ' bez logowania tokenem)');
       }
 
       await page.waitForFunction(() => !!window.webpackChunkdiscord_app);
@@ -980,6 +1060,36 @@ class Engine extends EventEmitter {
       fs.mkdirSync(profileDir, { recursive: true });
       await context.storageState({ path: path.join(profileDir, 'state.json') });
     } catch (_) {}
+  }
+
+  // Ciasteczka z state.json wracaja do kontekstu, gdy sam katalog profilu ich
+  // nie ma. Normalnie trwaly profil Chromium trzyma je sam i nie ma czego
+  // odtwarzac - ale po skasowaniu katalogu `browser/`, przeniesieniu instalacji
+  // albo awarii profilu byla to dotad utrata sesji i logowanie tokenem od nowa.
+  //
+  // state.json byl do tej pory zapisywany i NIGDY nie czytany:
+  // launchPersistentContext() nie przyjmuje `storageState`, wiec plik lezal
+  // martwy. Wstrzykniecie ciasteczek przez addCookies() to jedyna droga.
+  async _restoreSession(acc, context, profileDir) {
+    try {
+      const file = path.join(profileDir, 'state.json');
+      if (!fs.existsSync(file)) return;
+
+      const have = await context.cookies('https://discord.com').catch(() => []);
+      if (have.length) return;   // profil ma swoje - nie nadpisujemy
+
+      const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
+      const cookies = (saved && saved.cookies) || [];
+      const discord = cookies.filter(c => /(^|\.)discord\.com$/.test(String(c.domain || '')
+        .replace(/^\./, '.')) || String(c.domain || '').includes('discord'));
+      if (!discord.length) return;
+
+      await context.addCookies(discord);
+      this._log(acc, `Profil był pusty – odtworzyłem ${discord.length} ciasteczek`
+        + ' z zapisanej sesji');
+    } catch (e) {
+      this._log(acc, 'Nie udało się odtworzyć ciasteczek: ' + shortError(e));
+    }
   }
 
   _onReport(acc, ev) {
