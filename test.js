@@ -267,6 +267,55 @@ function restoreProxies() {
     assert.strictEqual(order[1][1], false, 'zatrzymane konto kończy się wynikiem negatywnym');
   });
 
+  await test('rozwiązana captcha wraca w nagłówkach, nie w ciele żądania', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'inject.js'), 'utf-8');
+
+    // Referencyjny klient discord.py-self (discord/http.py) odsyla rozwiazanie
+    // jako naglowki: X-Captcha-Key, X-Captcha-Session-Id, X-Captcha-Rqtoken.
+    // Wysylanie ich w ciele JSON oznacza, ze nawet poprawnie rozwiazana captcha
+    // nie zostanie przyjeta.
+    assert.ok(/X-Captcha-Key/.test(src), 'token musi iść w nagłówku X-Captcha-Key');
+    assert.ok(/X-Captcha-Rqtoken/.test(src), 'rqtoken musi iść w nagłówku');
+    assert.ok(/X-Captcha-Session-Id/.test(src),
+      'captcha_session_id z odpowiedzi 400 musi wracać w nagłówku');
+
+    assert.ok(!/body\.captcha_key\s*=/.test(src),
+      'rozwiązanie nie może wracać w ciele żądania');
+    assert.ok(!/body\.captcha_rqtoken\s*=/.test(src),
+      'rqtoken nie może wracać w ciele żądania');
+
+    // sessionId byl wyluskiwany z odpowiedzi i wyrzucany - musi dojsc do claimu.
+    assert.ok(/attemptClaim\(quest,\s*realCaptchaKey[^)]*sessionId/.test(src),
+      'sessionId musi być przekazany do ponowionego claimu');
+  });
+
+  await test('nierozwiązywalne wyzwanie jest pomijane, nie zgadywane', async () => {
+    const src = fs.readFileSync(path.join(__dirname, 'captcha.js'), 'utf-8');
+
+    // Zgadniete przeciagniecie to gorszy ruch niz brak odpowiedzi: hCaptcha
+    // odrzuca je bledem challenge-error i pali cala sesje wyzwania. Odmowa
+    // solvera musi konczyc sie pominieciem rundy, nie porzuceniem captchy.
+    const round = src.match(/async function playRound[\s\S]*?\n\}/)[0];
+    assert.ok(!/return 'solver-odmowil'/.test(round.split('if (kind !== \'grid\')')[0]),
+      'odmowa solvera na zadaniu pozycyjnym musi pomijać rundę, nie kończyć rozwiązywania');
+    assert.ok(/status === 'pomin'/.test(src),
+      'pętla rund musi obsługiwać pominięcie');
+    assert.ok(/skipChallenge/.test(src), 'musi istnieć ścieżka pominięcia rundy');
+
+    // dispatchEvent na kontrolkach hCaptchy zostal juz raz zdiagnozowany jako
+    // psujacy wyzwanie - nie moze wrocic tylnymi drzwiami w innej sciezce.
+    const code = src.replace(/\/\/[^\n]*/g, '');
+    assert.ok(!/dispatchEvent/.test(code),
+      'syntetyczny click na kontrolkach hCaptchy psuje wyzwanie');
+
+    // Bez wersji w logu nie da sie odroznic "poprawka nie dziala" od
+    // "poprawka nie zostala zaladowana" - solver chodzi w osobnym procesie.
+    assert.ok(/CAPTCHA_VERSION/.test(src), 'mostek musi stemplować swoją wersję');
+    const py = fs.readFileSync(path.join(__dirname, 'solver.py'), 'utf-8');
+    assert.ok(/SOLVER_VERSION/.test(py) && /_stamp\(/.test(py),
+      'solver musi dokładać wersję do każdej odpowiedzi');
+  });
+
   await test('profil używa trwałego katalogu i nie loguje się tokenem bez potrzeby', async () => {
     const src = fs.readFileSync(path.join(__dirname, 'engine.js'), 'utf-8');
     assert.ok(src.includes('launchPersistentContext'),

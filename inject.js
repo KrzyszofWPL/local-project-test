@@ -8,7 +8,7 @@ module.exports = `(async () => {
   // Wypisywana jako pierwsza linia logu: jesli w panelu widzisz stary numer,
   // proces node'a trzyma poprzedni inject.js w cache require() i trzeba go
   // zrestartowac (samo Stop/Start w UI nie przeladowuje tego pliku).
-  const VERSION = 'v2.8';
+  const VERSION = 'v2.9';
   // ─────────────────────────────────────────────────────────────────────────
 
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -285,13 +285,18 @@ module.exports = `(async () => {
 
   // Zapasowy POST z pominieciem modulu API Discorda - goly fetch nie da sie
   // zawiesic na modalu captchy, wiec zwraca PRAWDZIWY status i tresc bledu.
-  const rawApiPost = async (path, body) => {
+  const rawApiPost = async (path, body, extraHeaders) => {
     const headers = { 'content-type': 'application/json' };
     for (const k of Object.keys(seenHeaders)) headers[k] = seenHeaders[k];
     if (!headers.authorization) {
       const token = readToken();
       if (!token) throw new Error('brak tokenu i brak podsłuchanej autoryzacji');
       headers.authorization = token;
+    }
+    if (extraHeaders) {
+      for (const k of Object.keys(extraHeaders)) {
+        if (extraHeaders[k]) headers[k] = extraHeaders[k];
+      }
     }
 
     dbg('→ RAW POST /api/v9' + path + ' nagłówki=' + Object.keys(headers).join(','));
@@ -836,7 +841,7 @@ module.exports = `(async () => {
   // konczylo sie SecurityError. Zastapil go mostek w captcha.js, wolany przez
   // window.__questSolveCaptcha wystawione z Playwrighta.
 
-  const attemptClaim = async (quest, captchaKey = null, rqtoken = null) => {
+  const attemptClaim = async (quest, captchaKey = null, rqtoken = null, sessionId = null) => {
     const sealed = sealedFor(quest.id);
 
     // Dokladny ksztalt body prawdziwego klienta. Wszystkie piec pol jest
@@ -854,10 +859,20 @@ module.exports = `(async () => {
 
     const path = '/quests/' + quest.id + '/claim-reward';
     const body = { ...payloads[0] };
-    // Discord wiaze rozwiazanie z konkretnym wyzwaniem: sam token nie wystarczy,
-    // trzeba odeslac takze rqtoken z odpowiedzi, ktora to wyzwanie wystawila.
-    if (captchaKey) body.captcha_key = captchaKey;
-    if (rqtoken) body.captcha_rqtoken = rqtoken;
+
+    // Rozwiazanie captchy wraca do Discorda w NAGLOWKACH, nie w ciele zadania.
+    // Wczesniej szlo jako body.captcha_key / body.captcha_rqtoken, a
+    // captcha_session_id byl wyluskiwany z odpowiedzi 400 i wyrzucany - czyli
+    // nawet poprawnie rozwiazana captcha nie mogla zostac przyjeta.
+    //
+    // Zrodlo: referencyjny klient discord.py-self (discord/http.py):
+    //   headers['X-Captcha-Key'] = await captcha_handler(e)
+    //   if e.session_id: headers['X-Captcha-Session-Id'] = e.session_id
+    //   if e.rqtoken:    headers['X-Captcha-Rqtoken']    = e.rqtoken
+    const captchaHeaders = {};
+    if (captchaKey) captchaHeaders['X-Captcha-Key'] = captchaKey;
+    if (rqtoken) captchaHeaders['X-Captcha-Rqtoken'] = rqtoken;
+    if (sessionId) captchaHeaders['X-Captcha-Session-Id'] = sessionId;
 
     // GOLY FETCH JAKO SCIEZKA GLOWNA.
     // Warstwa API klienta Discorda przechwytuje odpowiedz z wyzwaniem captcha:
@@ -868,7 +883,7 @@ module.exports = `(async () => {
     try {
       raw = await _serialize(async () => {
         await _waitTurn(true);
-        return rawApiPost(path, body);
+        return rawApiPost(path, body, captchaHeaders);
       });
     } catch (e) {
       log('Zapasowy claim nie wystartował (' + ((e && e.message) || e)
@@ -898,6 +913,16 @@ module.exports = `(async () => {
     }
 
     // Sciezka zapasowa: modul API klienta (moze zawisnac - stad krotszy timeout).
+    //
+    // Rozwiazanie captchy jedzie w naglowkach, a przez ta warstwe nie da sie ich
+    // domknac - wyslanie claimu BEZ nich skonczyloby sie kolejnym 400 i zuzyciem
+    // jednorazowego tokenu. Lepiej zglosic blad niz spalic rozwiazana captche.
+    if (captchaKey) {
+      return { ok: false, status: null,
+               err: 'goły fetch nie wystartował, a moduł API klienta nie przeniesie'
+                    + ' nagłówków captchy – nie palę rozwiązanego tokenu' };
+    }
+
     try {
       const res = await apiCall('POST', path, body, 'claim', 45000);
       return { ok: true, status: res.status, body: res.body };
@@ -966,7 +991,9 @@ module.exports = `(async () => {
       }
 
       log('[GPU-AI] Token uzyskany, ponawiam claim...');
-      r = await attemptClaim(quest, realCaptchaKey, r.rqtoken || null);
+      // sessionId leci razem z tokenem - Discord wiaze rozwiazanie z konkretna
+      // sesja wyzwania, a nie tylko z samym tokenem hCaptchy.
+      r = await attemptClaim(quest, realCaptchaKey, r.rqtoken || null, r.sessionId || null);
     }
 
     if (r.ok) {

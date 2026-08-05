@@ -39,6 +39,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel
 
+# ── WERSJA SOLVERA - podnies przy KAZDEJ zmianie w tym pliku ────────────────
+# Doklejana do kazdej odpowiedzi i wypisywana w logu bota. Ten proces NIE jest
+# restartowany przez Stop/Start w panelu - to osobny serwer uvicorn, ktory
+# trzeba ubic recznie. Bez numeru w logu nie da sie odroznic "poprawka nie
+# dziala" od "poprawka nie zostala zaladowana".
+SOLVER_VERSION = "s1.0"
+
 app = FastAPI()
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_credentials=True,
@@ -486,6 +493,7 @@ def solve_drag(req: SolveRequest) -> dict:
 async def health():
     return {
         "ok": True,
+        "version": SOLVER_VERSION,
         "device": torch.cuda.get_device_name(0) if DEVICE == "cuda" else "CPU",
         "vram_gb": round(registry.vram_gb(), 2),
         "budget_gb": MAX_VRAM_GB,
@@ -493,6 +501,13 @@ async def health():
         "loaded": sorted(registry._models.keys()),
         "available": sorted(LOADERS.keys()),
     }
+
+
+def _stamp(result: dict) -> dict:
+    """Kazda odpowiedz niesie wersje procesu, ktory ja wyprodukowal."""
+    if isinstance(result, dict):
+        result.setdefault("version", SOLVER_VERSION)
+    return result
 
 
 @app.post("/solve")
@@ -504,27 +519,27 @@ async def solve(req: SolveRequest):
     # wolajacego jako "Internal Server Error" bez cienia informacji, co padlo.
     try:
         if kind == "grid":
-            return await run_in_threadpool(solve_grid, req)
+            return _stamp(await run_in_threadpool(solve_grid, req))
         if kind in ("drag", "rotate"):
-            return await run_in_threadpool(solve_drag, req)
+            return _stamp(await run_in_threadpool(solve_drag, req))
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001
         import traceback
         traceback.print_exc()
-        return {"success": False, "kind": kind, "reason": "backend_error",
-                "detail": f"{type(e).__name__}: {e}"[:400]}
+        return _stamp({"success": False, "kind": kind, "reason": "backend_error",
+                       "detail": f"{type(e).__name__}: {e}"[:400]})
 
     # Swiadoma odmowa - klikniecie na chybil trafil spala probe i podnosi
     # ocene ryzyka sesji bardziej niz brak odpowiedzi.
-    return {"success": False, "kind": kind, "reason": "unsupported_challenge",
-            "detail": f"Nie mam modelu do zadania typu \"{kind}\": \"{req.prompt}\""}
+    return _stamp({"success": False, "kind": kind, "reason": "unsupported_challenge",
+                   "detail": f"Nie mam modelu do zadania typu \"{kind}\": \"{req.prompt}\""})
 
 
 @app.post("/analyze-captcha")
 async def analyze_captcha(req: SolveRequest):
     """Stary kontrakt (tylko siatka) - zachowany dla zgodności."""
-    return await run_in_threadpool(solve_grid, req)
+    return _stamp(await run_in_threadpool(solve_grid, req))
 
 
 if __name__ == "__main__":

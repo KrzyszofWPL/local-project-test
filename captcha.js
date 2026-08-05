@@ -22,6 +22,14 @@ const path = require('path');
 //   4. Klikamy wytypowane kafelki i zatwierdzamy.
 //   5. Zwracamy token h-captcha-response.
 
+// ── WERSJA MOSTKA - podnies przy KAZDEJ zmianie w tym pliku ────────────────
+// Wypisywana raz na kazde rozwiazywanie. Bez tego z samego logu NIE DA SIE
+// stwierdzic, czy poprawka jest zaladowana: node trzyma captcha.js w cache
+// require(), a solver.py chodzi w OSOBNYM procesie Pythona, ktorego Stop/Start
+// w panelu nie restartuje. Dwie diagnozy zostaly juz przez to postawione w
+// ciemno - numer wersji w logu konczy te klase watpliwosci raz na zawsze.
+const CAPTCHA_VERSION = 'c1.0';
+
 const SOLVER_URL = process.env.SOLVER_URL || 'http://127.0.0.1:5000';
 const SOLVE_URL = SOLVER_URL.replace(/\/+$/, '') + '/solve';
 const CAPTCHA_URL = 'https://discord.com/__quest_captcha';
@@ -291,10 +299,12 @@ async function askSolver(payload, log) {
     // Swiadoma odmowa - nie klikamy na oslep, bo spalona proba kosztuje wiecej.
     log(`[GPU-AI] Solver odmówił [${(data && data.kind) || '?'}]: `
       + `${(data && data.reason) || 'brak odpowiedzi'}`
-      + (data && data.detail ? ` – ${data.detail}` : ''));
+      + (data && data.detail ? ` – ${data.detail}` : '')
+      + (data && data.version ? ` (solver ${data.version})` : ' (solver bez wersji – STARY PROCES?)'));
     return null;
   }
-  log(`[GPU-AI] Solver [${data.kind}/${data.model || '?'}] → akcja: ${data.action}`);
+  log(`[GPU-AI] Solver [${data.kind}/${data.model || '?'}] → akcja: ${data.action}`
+    + (data.version ? ` (solver ${data.version})` : ' (solver bez wersji – STARY PROCES?)'));
   return data;
 }
 
@@ -462,20 +472,40 @@ async function reroll(frame, log) {
         await el.click({ timeout: 5000 });
       }
       await frame.page().waitForTimeout(2000);
-      return true;
+      return 'odswiezone';
     }
 
     // NIE forsujemy klikniecia przez dispatchEvent. Sprawdzone: syntetyczne
     // zdarzenie na przycisku odswiezania hCaptcha odrzuca i psuje cale
     // wyzwanie - w logu wychodzi "challenge-error" dwie sekundy pozniej.
-    // Lepiej zrezygnowac z przelosowania i sprobowac rozwiazac to, co jest.
-    log(`[GPU-AI] Żaden z ${n} przycisków odświeżenia nie jest widoczny`
-      + ' – rezygnuję z przelosowania (wymuszony klik psuje wyzwanie).');
-    return false;
+    //
+    // Zamiast tego POMIJAMY runde. Przycisk zatwierdzenia hCaptchy przy braku
+    // zaznaczenia nosi etykiete "Skip" - to ten sam element `.button-submit`,
+    // ktory sluzy do wysylania odpowiedzi. Widac to w zrzucie diagnostycznym z
+    // wczesniejszego biegu: tresc ramki to "Please try again. ⚠️ Skip EN".
+    // Pominiecie przechodzi do nastepnej rundy, a hCaptcha laczy rundy w
+    // lancuch, w ktorym kolejna bywa z INNEJ rodziny zadan - czyli to jedyna
+    // dostepna droga z nierozwiazywalnego przeciagania do siatki obrazkow.
+    log(`[GPU-AI] Żaden z ${n} przycisków odświeżenia nie nadaje się do kliknięcia`
+      + ' – pomijam rundę zamiast forsować klik.');
+    return (await skipChallenge(frame, log)) ? 'pominiete' : false;
   } catch (e) {
     log(`[GPU-AI] Nie udało się wylosować nowego wyzwania: ${(e && e.message) || e}`);
     return false;
   }
+}
+
+const SUBMIT_SELECTORS = '.button-submit, .verify-button';
+
+// Pominiecie rundy: klikniecie przycisku zatwierdzenia BEZ zaznaczonej
+// odpowiedzi. hCaptcha renderuje wtedy na nim "Skip", nie "Verify".
+async function skipChallenge(frame, log) {
+  const ok = await clickControl(frame, SUBMIT_SELECTORS, log, 'pominięcie');
+  if (ok) {
+    log('[GPU-AI] Runda pominięta – czekam na następne wyzwanie.');
+    await frame.page().waitForTimeout(2000);
+  }
+  return ok;
 }
 
 // Zatwierdzenie odpowiedzi. Wczesniej bledy klikniecia byly polykane przez
@@ -483,10 +513,23 @@ async function reroll(frame, log) {
 // przycisk odswiezania) byl nieodrozninalny od poprawnie wyslanej odpowiedzi -
 // a nastepnym, co widac w logu, jest juz tylko blad hCaptchy.
 async function clickSubmit(frame, log) {
-  const all = frame.locator('.button-submit, .verify-button');
+  return clickControl(frame, SUBMIT_SELECTORS, log, 'zatwierdzenie');
+}
+
+// Klika pierwszy egzemplarz, w ktory da sie trafic myszą. hCaptcha trzyma w
+// drzewie zapasowe kopie kontrolek, wiec `.first()` czesto wskazuje ukryta.
+//
+// Ostatnia proba przez dispatchEvent zostala USUNIETA. Ta sama technika na
+// przycisku odswiezania byla juz raz zdiagnozowana jako psujaca cale wyzwanie
+// (patrz komentarz w reroll) - syntetyczne zdarzenie bez poprzedzajacego ruchu
+// myszy jest dla hCaptchy sygnalem automatu, a nie klikniecia. Trzymanie tego
+// samego wyjatku w sciezce zatwierdzenia bylo niekonsekwencja: uratowany klik
+// i tak konczyl sie odrzuceniem odpowiedzi, tyle ze rundę pozniej.
+async function clickControl(frame, selector, log, what) {
+  const all = frame.locator(selector);
   const n = await all.count();
   if (!n) {
-    log('[GPU-AI] Nie znaleziono przycisku zatwierdzenia.');
+    log(`[GPU-AI] Nie znaleziono przycisku (${what}).`);
     return false;
   }
   for (let i = 0; i < n; i++) {
@@ -499,19 +542,12 @@ async function clickSubmit(frame, log) {
       else await el.click({ timeout: 5000 });
       return true;
     } catch (e) {
-      log(`[GPU-AI] Kliknięcie zatwierdzenia nie powiodło się: ${(e && e.message) || e}`);
+      log(`[GPU-AI] Kliknięcie (${what}) nie powiodło się: ${(e && e.message) || e}`);
       return false;
     }
   }
-  log(`[GPU-AI] Żaden z ${n} przycisków zatwierdzenia nie jest widoczny`
-    + ' – wysyłam zdarzenie click bezpośrednio.');
-  try {
-    await all.first().dispatchEvent('click');
-    return true;
-  } catch (e) {
-    log(`[GPU-AI] Zatwierdzenie nieudane: ${(e && e.message) || e}`);
-    return false;
-  }
+  log(`[GPU-AI] Żaden z ${n} przycisków (${what}) nie nadaje się do kliknięcia.`);
+  return false;
 }
 
 // Jedna runda wyzwania: przeczytaj polecenie, zrzuc kafelki, zapytaj solver,
@@ -615,7 +651,12 @@ async function playRound(frame, log, page, opts) {
       image_data: 'data:image/png;base64,' + shot.toString('base64'),
     }, log);
 
-    if (!answer) return 'solver-odmowil';
+    // Odmowa solvera na zadaniu pozycyjnym NIE konczy juz calego rozwiazywania.
+    // Wysylanie zgadnietego przeciagniecia jest gorsze niz brak odpowiedzi:
+    // hCaptcha odrzuca zla odpowiedz bledem `challenge-error` i pali cala
+    // sesje wyzwania. Pominiecie rundy kosztuje tyle samo, a daje szanse, ze
+    // nastepna runda przyjdzie z rodziny, ktora faktycznie umiemy rozwiazac.
+    if (!answer) return 'pomin';
 
     if (answer.action === 'drag' && Array.isArray(answer.from) && Array.isArray(answer.to)) {
       if (answer.confidence === 'low') {
@@ -628,13 +669,13 @@ async function playRound(frame, log, page, opts) {
       if (!(dist > 0.02)) {
         log(`[GPU-AI] Odrzucam odpowiedź: wektor przeciągnięcia ~0 (${dist.toFixed(3)})`
           + ' - model wskazał dwa razy to samo miejsce.');
-        return 'solver-odmowil';
+        return 'pomin';
       }
 
       await performDrag(page, box, answer.from, answer.to, log);
     } else {
       log(`[GPU-AI] Solver nie zwrócił wykonalnej akcji (${answer.action || '?'}).`);
-      return 'solver-odmowil';
+      return 'pomin';
     }
 
     if (!(await clickSubmit(frame, log))) return 'brak-zatwierdzenia';
@@ -687,8 +728,13 @@ async function playRound(frame, log, page, opts) {
   const picks = Array.isArray(answer.click_indices) ? answer.click_indices : [];
   log(`[GPU-AI] Cel "${answer.target || '?'}" → kafelki [${picks.join(', ')}]`);
   if (!picks.length) {
-    log('[GPU-AI] Model nie wskazał żadnego kafelka - nie zatwierdzam pustej odpowiedzi.');
-    return 'solver-odmowil';
+    // Zero pasujacych kafelkow to LEGALNA odpowiedz w hCaptchy: czesc rund nie
+    // zawiera zadnego trafienia, a przycisk nosi wtedy etykiete "Skip" i
+    // pominiecie jest ruchem POPRAWNYM. Wczesniej konczylo sie to porzuceniem
+    // calego rozwiazywania, czyli gwarantowanym zerem.
+    log('[GPU-AI] Model nie wskazał żadnego kafelka – pomijam rundę'
+      + ' (brak trafień to dopuszczalna odpowiedź).');
+    return 'pomin';
   }
 
   // Nieudane klikniecia byly dotad polykane w cichosci, wiec zatwierdzenie
@@ -753,7 +799,8 @@ async function solveCaptcha(context, challenge, log) {
       body: pageHtml(challenge.sitekey, challenge.rqdata || null),
     }));
 
-    log(`[GPU-AI] Otwieram wyzwanie (sitekey ${String(challenge.sitekey).slice(0, 8)}…`
+    log(`[GPU-AI] Mostek ${CAPTCHA_VERSION} | otwieram wyzwanie`
+      + ` (sitekey ${String(challenge.sitekey).slice(0, 8)}…`
       + `, rqdata ${challenge.rqdata ? 'jest' : 'brak'})`);
     await page.goto(CAPTCHA_URL, { waitUntil: 'domcontentloaded' });
 
@@ -822,17 +869,39 @@ async function solveCaptcha(context, challenge, log) {
 
       if ((status === 'brak-kafelkow' || status === 'pozycyjne') && rerolls < MAX_REROLLS) {
         rerolls++;
-        log(`[GPU-AI] Losuję inne wyzwanie (${rerolls}/${MAX_REROLLS})...`);
-        // Przelosowanie NIE jest rozwiazana runda - bez cofniecia licznika
-        // trzy proby wylosowania siatki zjadaly caly budzet MAX_ROUNDS i na
-        // faktyczne rozwiazywanie nie zostawalo nic. Petla i tak sie konczy,
-        // bo `rerolls` jest ograniczone.
-        round--;
-        if (await reroll(frame, log)) continue;
+        log(`[GPU-AI] Szukam innego wyzwania (${rerolls}/${MAX_REROLLS})...`);
+
+        const how = await reroll(frame, log);
+        // Odswiezenie przyciskiem NIE jest rozwiazana runda - bez cofniecia
+        // licznika trzy proby zjadaly caly budzet MAX_ROUNDS i na faktyczne
+        // rozwiazywanie nie zostawalo nic. Pominiecie natomiast runde ZUZYWA
+        // (odpowiedz idzie na serwer, tyle ze pusta), wiec licznika nie ruszamy.
+        if (how === 'odswiezone') { round--; continue; }
+        if (how === 'pominiete') continue;
+
         // Bez przycisku losowania nie ma po co isc dalej z tym samym zadaniem -
         // ale przy zadaniu pozycyjnym sprobujmy je chociaz rozwiazac.
         if (status !== 'pozycyjne') return null;
         rerolls = MAX_REROLLS;
+        continue;
+      }
+
+      // Wyzwania, ktorego nie umiemy rozwiazac, NIE probujemy zgadywac.
+      // Pomijamy runde i prosimy o nastepna: hCaptcha laczy rundy w lancuch i
+      // kolejna bywa z innej rodziny zadan, wiec to jedyna droga z przeciagania
+      // (ktorego grounding nie obsluguje) do siatki obrazkow (ktora CLIP
+      // rozwiazuje). Wczesniej kazda taka runda konczyla CALE rozwiazywanie -
+      // stad zero odebranych nagrod przy kazdym wyzwaniu pozycyjnym.
+      if (status === 'pomin') {
+        if (round >= MAX_ROUNDS) {
+          log(`[GPU-AI] Wyczerpano ${MAX_ROUNDS} rund – same zadania poza zasięgiem solvera.`);
+          return null;
+        }
+        if (!(await skipChallenge(frame, log))) {
+          log('[GPU-AI] Nie udało się pominąć rundy – przerywam.');
+          await dumpState(page, log, 'brak-pominiecia');
+          return null;
+        }
         continue;
       }
 
